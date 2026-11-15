@@ -25,6 +25,15 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
             // preview mesh while a right-button drag is active.
             let orbit_preview = handle_camera_input(ui, app, rect);
             sync_scene(app, orbit_preview);
+            if app.ui_state.face_selection_mode {
+                ui.painter_at(rect).text(
+                    egui::pos2(rect.center().x, rect.top() + 12.0),
+                    egui::Align2::CENTER_TOP,
+                    "Face selection active · click faces to toggle selection",
+                    egui::FontId::proportional(14.0),
+                    egui::Color32::from_rgb(90, 225, 235),
+                );
+            }
 
             // Frame all geometry on request
             if app.ui_state.request_fit {
@@ -136,7 +145,7 @@ fn show_project_welcome(ui: &mut egui::Ui, app: &mut TekkCamApp, rect: egui::Rec
         egui::Color32::from_rgb(37, 39, 53)
     };
     let width = rect.width().min(700.0).max(320.0);
-    let height = 250.0_f32.min(rect.height().max(280.0));
+    let height = rect.height().min(300.0).max(250.0);
     let card_rect = egui::Rect::from_center_size(rect.center(), egui::vec2(width, height));
 
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(card_rect), |ui| {
@@ -156,10 +165,16 @@ fn show_project_welcome(ui: &mut egui::Ui, app: &mut TekkCamApp, rect: egui::Rec
                             .color(heading),
                     );
                     ui.add_space(8.0);
-                    ui.label(
-                        egui::RichText::new("Open a TekkCAM project or create a new workspace.")
+                    ui.add_sized(
+                        [ui.available_width(), 36.0],
+                        egui::Label::new(
+                            egui::RichText::new(
+                                "Open a TekkCAM project or create a new workspace.",
+                            )
                             .size(15.0)
                             .color(muted),
+                        )
+                        .wrap(),
                     );
 
                     let button_width = ((ui.available_width() - 14.0) * 0.5).max(120.0);
@@ -402,6 +417,19 @@ fn sync_scene(app: &mut TekkCamApp, orbit_preview: bool) {
         )
         .collect();
     let mut sig = sig;
+    if let Some(operation) = app
+        .ui_state
+        .selected_operation
+        .and_then(|index| app.project.operations.get(index))
+        .filter(|operation| operation.manual_face_selection)
+    {
+        sig.extend(
+            operation
+                .source_face_ids
+                .iter()
+                .map(|face_id| (u64::MAX - 100, true, *face_id)),
+        );
+    }
     sig.push((u64::MAX, app.ui_state.show_3d_view, 0));
     sig.push((u64::MAX - 21, app.ui_state.show_stock_removal, 0));
     for (index, value) in app
@@ -456,6 +484,13 @@ fn sync_scene(app: &mut TekkCamApp, orbit_preview: bool) {
                 model.transform = transform;
             }
         }
+        let selected_face_ids = app
+            .ui_state
+            .selected_operation
+            .and_then(|index| app.project.operations.get(index))
+            .filter(|operation| operation.manual_face_selection)
+            .map(|operation| operation.source_face_ids.as_slice())
+            .unwrap_or(&[]);
         app.scene = Arc::new(Scene::build(
             &app.project.layers,
             &models,
@@ -464,6 +499,7 @@ fn sync_scene(app: &mut TekkCamApp, orbit_preview: bool) {
             app.ui_state.show_3d_view,
             app.ui_state.model_orbit,
             app.ui_state.selected_model,
+            selected_face_ids,
             orbit_preview,
             &app.project.setup,
             app.ui_state.show_stock_removal,
@@ -524,7 +560,31 @@ fn fit_to_geometry(app: &mut TekkCamApp, size: egui::Vec2) {
 
 /// Handle mouse pan and scroll-wheel zoom in the viewport.
 fn handle_camera_input(ui: &mut egui::Ui, app: &mut TekkCamApp, rect: egui::Rect) -> bool {
+    if app.ui_state.face_selection_mode {
+        let selection_is_valid = app.ui_state.show_3d_view
+            && app.project.models.iter().any(|model| model.visible)
+            && app
+                .ui_state
+                .selected_operation
+                .and_then(|index| app.project.operations.get(index))
+                .is_some_and(|operation| {
+                    operation.manual_face_selection
+                        && matches!(
+                            &operation.kind,
+                            crate::cam::operations::OperationKind::ModelProfile2D
+                        )
+                });
+        if !selection_is_valid {
+            app.ui_state.face_selection_mode = false;
+        }
+    }
     let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+
+    if app.ui_state.face_selection_mode && response.clicked_by(egui::PointerButton::Primary) {
+        if let Some(pointer_pos) = response.interact_pointer_pos() {
+            toggle_model_face_at(app, pointer_pos, rect);
+        }
+    }
 
     if response.double_clicked() {
         if let Some(pointer_pos) = response.interact_pointer_pos() {
@@ -534,7 +594,7 @@ fn handle_camera_input(ui: &mut egui::Ui, app: &mut TekkCamApp, rect: egui::Rect
 
     // Pan (middle-mouse drag OR left drag with no selection intent)
     if response.dragged_by(egui::PointerButton::Middle)
-        || response.dragged_by(egui::PointerButton::Primary)
+        || (!app.ui_state.face_selection_mode && response.dragged_by(egui::PointerButton::Primary))
     {
         let delta = response.drag_delta();
         app.camera.pan_pixels(delta);
@@ -559,6 +619,117 @@ fn handle_camera_input(ui: &mut egui::Ui, app: &mut TekkCamApp, rect: egui::Rect
         }
     }
     orbit_preview
+}
+
+fn toggle_model_face_at(app: &mut TekkCamApp, pointer: egui::Pos2, rect: egui::Rect) {
+    let Some(operation_index) = app
+        .ui_state
+        .selected_operation
+        .filter(|&index| index < app.project.operations.len())
+    else {
+        app.ui_state.status_message = "Select a STEP face-profile operation first".into();
+        return;
+    };
+
+    let model_index = app
+        .ui_state
+        .selected_model
+        .filter(|&index| {
+            app.project
+                .models
+                .get(index)
+                .is_some_and(|model| model.visible)
+        })
+        .or_else(|| app.project.models.iter().position(|model| model.visible));
+    let Some(model_index) = model_index else {
+        app.ui_state.status_message = "No visible STEP model to select faces from".into();
+        return;
+    };
+    let model = &app.project.models[model_index];
+    let mut best: Option<(f32, u64)> = None;
+    for body in &model.bodies {
+        for offset in 0..body.triangle_count {
+            let triangle_index = body.first_triangle + offset;
+            let Some(triangle) = model.triangles.get(triangle_index) else {
+                continue;
+            };
+            let face_id = body
+                .triangle_face_ids
+                .get(offset)
+                .copied()
+                .unwrap_or(body.source_item_id);
+            if face_id == 0 {
+                continue;
+            }
+            let Some(points) = triangle
+                .map(|vertex| model.transformed_vertex(vertex as usize))
+                .into_iter()
+                .collect::<Option<Vec<_>>>()
+                .and_then(|points| {
+                    <Vec<[f32; 3]> as TryInto<[[f32; 3]; 3]>>::try_into(points).ok()
+                })
+            else {
+                continue;
+            };
+            if !crate::renderer::pipeline::view_triangle_is_front_facing(
+                points,
+                app.ui_state.model_orbit,
+            ) {
+                continue;
+            }
+
+            let screen_points = points.map(|point| {
+                let projected =
+                    crate::renderer::pipeline::project_view_point(point, app.ui_state.model_orbit);
+                egui::pos2(
+                    rect.center().x + (projected[0] - app.camera.pan.x) * app.camera.zoom,
+                    rect.center().y - (projected[1] - app.camera.pan.y) * app.camera.zoom,
+                )
+            });
+            let Some(weights) = screen_barycentric(pointer, screen_points) else {
+                continue;
+            };
+            let depth = points
+                .iter()
+                .zip(weights)
+                .map(|(point, weight)| {
+                    crate::renderer::pipeline::view_depth(*point, app.ui_state.model_orbit) * weight
+                })
+                .sum::<f32>();
+            if best.is_none_or(|(closest, _)| depth < closest) {
+                best = Some((depth, face_id));
+            }
+        }
+    }
+
+    let Some((_, face_id)) = best else {
+        app.ui_state.status_message = "No model face at that position".into();
+        return;
+    };
+    let operation = &mut app.project.operations[operation_index];
+    operation.manual_face_selection = true;
+    if operation.source_face_ids.contains(&face_id) {
+        operation
+            .source_face_ids
+            .retain(|selected| *selected != face_id);
+        app.ui_state.status_message = format!("Deselected face {face_id}");
+    } else {
+        operation.source_face_ids.push(face_id);
+        app.ui_state.status_message = format!("Selected face {face_id}");
+    }
+    app.ui_state.project_dirty = true;
+}
+
+fn screen_barycentric(point: egui::Pos2, triangle: [egui::Pos2; 3]) -> Option<[f32; 3]> {
+    let [a, b, c] = triangle;
+    let denominator = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
+    if denominator.abs() < 1e-5 {
+        return None;
+    }
+    let first = ((b.y - c.y) * (point.x - c.x) + (c.x - b.x) * (point.y - c.y)) / denominator;
+    let second = ((c.y - a.y) * (point.x - c.x) + (a.x - c.x) * (point.y - c.y)) / denominator;
+    let third = 1.0 - first - second;
+    (first >= -1e-4 && second >= -1e-4 && third >= -1e-4).then_some([first, second, third])
 }
 
 /// Draw an overlay with the cursor world position, zoom level, and viewport hints.

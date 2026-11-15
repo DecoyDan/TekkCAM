@@ -274,6 +274,7 @@ pub struct UiState {
     pub selected_layer: Option<usize>,
     pub selected_model: Option<usize>,
     pub selected_operation: Option<usize>,
+    pub face_selection_mode: bool,
     pub tool_editor: Option<crate::cam::tool::Tool>,
     pub tool_editor_index: Option<usize>,
     pub tool_editor_error: Option<String>,
@@ -358,6 +359,7 @@ impl Default for UiState {
             selected_layer: None,
             selected_model: None,
             selected_operation: None,
+            face_selection_mode: false,
             tool_editor: None,
             tool_editor_index: None,
             tool_editor_error: None,
@@ -1424,6 +1426,33 @@ impl eframe::App for TekkCamApp {
                 .filter_map(|f| f.path.clone())
                 .collect()
         });
+        let files_hovered = ctx.input(|i| !i.raw.hovered_files.is_empty());
+        if files_hovered {
+            let screen = ctx.screen_rect();
+            let painter = ctx.layer_painter(egui::LayerId::new(
+                egui::Order::Foreground,
+                egui::Id::new("file_drop_hint"),
+            ));
+            let bounds = screen.shrink(32.0);
+            painter.rect_filled(
+                bounds,
+                egui::CornerRadius::same(16),
+                egui::Color32::from_rgba_premultiplied(18, 18, 24, 220),
+            );
+            painter.rect_stroke(
+                bounds,
+                egui::CornerRadius::same(16),
+                egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(100, 150, 240)),
+                egui::StrokeKind::Inside,
+            );
+            painter.text(
+                screen.center(),
+                egui::Align2::CENTER_CENTER,
+                "Drop supported design files to import into this project",
+                egui::FontId::proportional(24.0),
+                egui::Color32::WHITE,
+            );
+        }
         for p in dropped {
             self.import_file(&p);
         }

@@ -2,6 +2,16 @@
 #![allow(dead_code, unused_variables, unused_imports)]
 
 fn main() -> anyhow::Result<()> {
+    // Hyprland's native Wayland file-drop path is unreliable for this app.
+    // Match Muzik's workaround so eframe falls back to the X11/XWayland path.
+    if std::env::var("XDG_SESSION_TYPE").is_ok_and(|session| session == "wayland") {
+        unsafe {
+            std::env::remove_var("WAYLAND_DISPLAY");
+        }
+        // Keep the XWayland UI at the preferred fractional scale for this setup.
+        std::env::set_var("WINIT_X11_SCALE_FACTOR", "1.25");
+    }
+
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(
         // Show our own crate at INFO, suppress noisy wgpu/zbus internals
         "warn,tekkcam=info,eframe=info,egui_wgpu=info,wgpu=warn",

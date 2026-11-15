@@ -76,6 +76,7 @@ impl Scene {
         view_3d: bool,
         orbit: [f32; 2],
         selected_model: Option<usize>,
+        selected_face_ids: &[u64],
         orbit_preview: bool,
         setup: &MachiningSetup,
         show_stock_removal: bool,
@@ -116,12 +117,26 @@ impl Scene {
             } else {
                 [0.55, 0.68, 0.82]
             };
+            let mut triangle_face_ids = vec![None; model.triangles.len()];
+            for body in &model.bodies {
+                for offset in 0..body.triangle_count {
+                    let triangle_index = body.first_triangle + offset;
+                    if triangle_index < triangle_face_ids.len() {
+                        triangle_face_ids[triangle_index] = Some(
+                            body.triangle_face_ids
+                                .get(offset)
+                                .copied()
+                                .unwrap_or(body.source_item_id),
+                        );
+                    }
+                }
+            }
             let mut faces = if orbit_preview {
                 Vec::new()
             } else {
                 Vec::with_capacity(model.triangles.len())
             };
-            for face in model.triangles.iter().step_by(stride) {
+            for (triangle_index, face) in model.triangles.iter().enumerate().step_by(stride) {
                 let points = face.map(|index| {
                     model
                         .transformed_vertex(index as usize)
@@ -130,15 +145,18 @@ impl Scene {
                 if !is_front_facing(points, orbit) {
                     continue;
                 }
+                let selected = triangle_face_ids[triangle_index]
+                    .is_some_and(|face_id| selected_face_ids.contains(&face_id));
+                let color = if selected { [0.15, 0.95, 0.95] } else { base };
                 if orbit_preview {
-                    append_shaded_triangle(&mut scene, points, base, orbit);
+                    append_shaded_triangle(&mut scene, points, color, orbit);
                 } else {
                     let depth = points
                         .iter()
                         .map(|p| camera_point(*p, orbit)[2])
                         .sum::<f32>()
                         / 3.0;
-                    faces.push((depth, points));
+                    faces.push((depth, points, color));
                 }
             }
             if !orbit_preview {
@@ -147,8 +165,8 @@ impl Scene {
                 // last. Reversing this order lets the back of a STEP model
                 // obscure its front after orbit preview ends.
                 faces.sort_by(|a, b| b.0.total_cmp(&a.0));
-                for (_, points) in faces {
-                    append_shaded_triangle(&mut scene, points, base, orbit);
+                for (_, points, color) in faces {
+                    append_shaded_triangle(&mut scene, points, color, orbit);
                 }
             }
         }
@@ -493,6 +511,14 @@ fn project_point(x: f32, y: f32, z: f32, view_3d: bool, orbit: [f32; 2]) -> [f32
 /// the viewport scene, for egui overlays such as the simulated cutter marker.
 pub fn project_view_point(point: [f32; 3], orbit: [f32; 2]) -> [f32; 2] {
     project_point(point[0], point[1], point[2], true, orbit)
+}
+
+pub fn view_depth(point: [f32; 3], orbit: [f32; 2]) -> f32 {
+    camera_point(point, orbit)[2]
+}
+
+pub fn view_triangle_is_front_facing(points: [[f32; 3]; 3], orbit: [f32; 2]) -> bool {
+    is_front_facing(points, orbit)
 }
 
 fn camera_point(point: [f32; 3], orbit: [f32; 2]) -> [f32; 3] {

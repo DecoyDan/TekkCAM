@@ -3,15 +3,31 @@ use crate::cam::operations::OperationKind;
 use crate::workspace::layer::{Layer, LayerKind};
 use eframe::egui;
 
-const HEADER_COLOR: egui::Color32 = egui::Color32::from_rgb(72, 75, 106);
-const SELECTED_BG: egui::Color32 = egui::Color32::from_rgb(210, 211, 219);
 const ACCENT: egui::Color32 = egui::Color32::from_rgb(80, 140, 255);
+const ICON_EYE: char = '\u{F06E}';
+const ICON_EYE_OFF: char = '\u{F070}';
 
 pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
     let panel_bg = if app.ui_state.theme == crate::app::AppTheme::Light {
         egui::Color32::from_rgb(228, 229, 241)
     } else {
         egui::Color32::from_rgb(20, 20, 28)
+    };
+    let dark = app.ui_state.theme == crate::app::AppTheme::Dark;
+    let selected_bg = if dark {
+        egui::Color32::from_rgb(55, 65, 90)
+    } else {
+        egui::Color32::from_rgb(210, 211, 219)
+    };
+    let row_text = if dark {
+        egui::Color32::from_rgb(225, 227, 236)
+    } else {
+        egui::Color32::from_rgb(45, 47, 64)
+    };
+    let header_color = if dark {
+        egui::Color32::from_rgb(165, 175, 205)
+    } else {
+        egui::Color32::from_rgb(72, 75, 106)
     };
     egui::SidePanel::left("sidebar")
         .resizable(true)
@@ -25,7 +41,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
         )
         .show(ctx, |ui| {
             // ── Objects / Layers section ──────────────────────────────────
-            section_header(ui, "OBJECTS");
+            section_header(ui, "OBJECTS", header_color);
             ui.add_space(4.0);
 
             // Add layer button
@@ -46,7 +62,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
 
             // Layer list — extract display info first to avoid borrow conflicts
             let layer_count = app.project.layers.len();
-            let layer_display: Vec<(bool, &'static str, String, bool)> = (0..layer_count)
+            let layer_display: Vec<(bool, char, String, bool)> = (0..layer_count)
                 .map(|i| {
                     let l = &app.project.layers[i];
                     let selected = app.ui_state.selected_layer == Some(i);
@@ -58,7 +74,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                         LayerKind::Gcode => "NC",
                         LayerKind::Placeholder => "NEW",
                     };
-                    let vis_icon: &'static str = if l.visible { "ON" } else { "OFF" };
+                    let vis_icon = if l.visible { ICON_EYE } else { ICON_EYE_OFF };
                     let label = format!("{kind_icon} {}", l.name);
                     (selected, vis_icon, label, l.visible)
                 })
@@ -70,7 +86,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
 
             for (i, (is_selected, vis_icon, label, _vis)) in layer_display.iter().enumerate() {
                 let row_bg = if *is_selected {
-                    SELECTED_BG
+                    selected_bg
                 } else {
                     egui::Color32::TRANSPARENT
                 };
@@ -81,18 +97,34 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                     .inner_margin(egui::Margin::symmetric(6, 3))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            if ui.small_button(*vis_icon).clicked() {
+                            let visibility_icon = egui::RichText::new(vis_icon.to_string())
+                                .font(egui::FontId::new(
+                                    15.0,
+                                    egui::FontFamily::Name("sidebar_icons".into()),
+                                ))
+                                .color(row_text);
+                            if ui
+                                .add_sized(
+                                    [22.0, 20.0],
+                                    egui::Button::new(visibility_icon).frame(false),
+                                )
+                                .on_hover_text(if *_vis { "Hide layer" } else { "Show layer" })
+                                .clicked()
+                            {
                                 toggle_vis = Some(i);
                             }
-                            ui.label(egui::RichText::new(label).size(13.0));
+                            if ui
+                                .selectable_label(
+                                    *is_selected,
+                                    egui::RichText::new(label).size(13.0).color(row_text),
+                                )
+                                .clicked()
+                            {
+                                select_layer = Some(i);
+                            }
                         });
                     })
                     .response;
-
-                let response = response.interact(egui::Sense::click());
-                if response.clicked() {
-                    select_layer = Some(i);
-                }
                 response.context_menu(|ui| {
                     if ui.button("Delete layer").clicked() {
                         delete_layer = Some(i);
@@ -138,7 +170,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
 
             if !app.project.models.is_empty() {
                 ui.add_space(8.0);
-                section_header(ui, "3D MODELS");
+                section_header(ui, "3D MODELS", header_color);
                 let model_display: Vec<(bool, bool, String)> = app
                     .project
                     .models
@@ -163,9 +195,19 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                 for (index, (selected, visible, label)) in model_display.iter().enumerate() {
                     let response = ui
                         .horizontal(|ui| {
-                            let mut visible = *visible;
-                            if ui.checkbox(&mut visible, "").changed() {
-                                changed_model_visibility = Some((index, visible));
+                            let visibility_icon = if *visible { ICON_EYE } else { ICON_EYE_OFF };
+                            let icon = egui::RichText::new(visibility_icon.to_string())
+                                .font(egui::FontId::new(
+                                    15.0,
+                                    egui::FontFamily::Name("sidebar_icons".into()),
+                                ))
+                                .color(row_text);
+                            if ui
+                                .add_sized([22.0, 20.0], egui::Button::new(icon).frame(false))
+                                .on_hover_text(if *visible { "Hide model" } else { "Show model" })
+                                .clicked()
+                            {
+                                changed_model_visibility = Some((index, !*visible));
                             }
                             if ui.selectable_label(*selected, label).clicked() {
                                 select_model = Some(index);
@@ -213,7 +255,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
             ui.add_space(8.0);
 
             // ── CAM Operations section ────────────────────────────────────
-            section_header(ui, "CAM OPERATIONS");
+            section_header(ui, "CAM OPERATIONS", header_color);
             let op_count = app.project.operations.len();
 
             // Extract display data for operations
@@ -243,7 +285,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
 
             for (i, (is_selected, icon, name, generated)) in op_display.iter().enumerate() {
                 let row_bg = if *is_selected {
-                    SELECTED_BG
+                    selected_bg
                 } else {
                     egui::Color32::TRANSPARENT
                 };
@@ -259,7 +301,11 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                             } else {
                                 egui::Color32::from_rgb(180, 160, 60)
                             };
-                            ui.label(egui::RichText::new(format!("{icon} {name}")).size(13.0));
+                            ui.label(
+                                egui::RichText::new(format!("{icon} {name}"))
+                                    .size(13.0)
+                                    .color(row_text),
+                            );
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
@@ -356,11 +402,6 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
         });
 }
 
-fn section_header(ui: &mut egui::Ui, title: &str) {
-    ui.label(
-        egui::RichText::new(title)
-            .size(10.0)
-            .color(HEADER_COLOR)
-            .strong(),
-    );
+fn section_header(ui: &mut egui::Ui, title: &str, color: egui::Color32) {
+    ui.label(egui::RichText::new(title).size(10.0).color(color).strong());
 }

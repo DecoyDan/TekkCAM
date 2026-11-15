@@ -61,6 +61,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                         app.request_project_save_dialog(ctx);
                         ui.close_menu();
                     }
+                    ui.separator();
                     if ui.button("📤  Export G-code…").clicked() {
                         crate::ui::console::export_gcode(ctx, app);
                         ui.close_menu();
@@ -345,9 +346,68 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                     )
                     .response
                     .on_hover_text("Add CAM operation");
+                    let selected_operation = app
+                        .ui_state
+                        .selected_operation
+                        .filter(|&index| index < app.project.operations.len());
+                    if ui
+                        .add_enabled(
+                            selected_operation.is_some() && !app.generation_pending,
+                            egui::Button::new("▶ Generate Toolpath"),
+                        )
+                        .clicked()
+                    {
+                        if let Some(index) = selected_operation {
+                            app.generate_operation(index);
+                        }
+                    }
                     if ui.button("▶ Generate All").clicked() {
                         for i in 0..app.project.operations.len() {
                             app.generate_operation(i);
+                        }
+                    }
+                    let can_select_model_faces = app.ui_state.show_3d_view
+                        && app.project.models.iter().any(|model| model.visible)
+                        && app
+                            .ui_state
+                            .selected_operation
+                            .and_then(|index| app.project.operations.get(index))
+                            .is_some_and(|operation| {
+                                matches!(
+                                    &operation.kind,
+                                    crate::cam::operations::OperationKind::ModelProfile2D
+                                )
+                            });
+                    let face_selection_label = if app.ui_state.face_selection_mode {
+                        "✓ Select Faces"
+                    } else {
+                        "◇ Select Faces"
+                    };
+                    if ui
+                        .add_enabled(
+                            can_select_model_faces,
+                            egui::Button::new(face_selection_label),
+                        )
+                        .on_hover_text("Click model faces to add or remove them from the selected profile operation")
+                        .clicked()
+                    {
+                        app.ui_state.face_selection_mode = !app.ui_state.face_selection_mode;
+                        if app.ui_state.face_selection_mode {
+                            if let Some(operation) = app
+                                .ui_state
+                                .selected_operation
+                                .and_then(|index| app.project.operations.get_mut(index))
+                            {
+                                if !operation.manual_face_selection {
+                                    operation.manual_face_selection = true;
+                                    operation.source_face_ids.clear();
+                                    app.ui_state.project_dirty = true;
+                                }
+                            }
+                            app.ui_state.status_message =
+                                "Click model faces to select them; click again to deselect".into();
+                        } else {
+                            app.ui_state.status_message = "Face selection finished".into();
                         }
                     }
                     if ui
