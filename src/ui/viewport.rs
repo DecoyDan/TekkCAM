@@ -281,6 +281,11 @@ fn project_action_button(
 
 fn show_zoom_controls(ctx: &egui::Context, app: &mut TekkCamApp, rect: egui::Rect) {
     let mut zoom_by = 1.0;
+    let fit_step_model = app
+        .project
+        .models
+        .iter()
+        .position(|model| model.visible && is_step_model(&model.source_path));
     egui::Area::new("viewport_zoom_controls".into())
         .fixed_pos(egui::pos2(rect.left() + 8.0, rect.top() + 30.0))
         .show(ctx, |ui| {
@@ -305,11 +310,44 @@ fn show_zoom_controls(ctx: &egui::Context, app: &mut TekkCamApp, rect: egui::Rec
                 {
                     zoom_by = 1.0 / 1.2;
                 }
+                if let Some(model_index) = fit_step_model {
+                    if ui
+                        .add_sized(
+                            [30.0, 28.0],
+                            egui::Button::new(
+                                egui::RichText::new(ICON_CUBE_OUTLINE.to_string()).font(
+                                    egui::FontId::new(
+                                        16.0,
+                                        egui::FontFamily::Name("sidebar_icons".into()),
+                                    ),
+                                ),
+                            ),
+                        )
+                        .on_hover_text("Fit model to stock")
+                        .clicked()
+                    {
+                        app.ui_state.selected_model = Some(model_index);
+                        app.ui_state.fit_model_rotation_deg = app.project.models[model_index]
+                            .transform
+                            .rotation_degrees
+                            .map(|angle| angle.round() as i16);
+                        app.ui_state.show_fit_model_dialog = true;
+                    }
+                }
             });
         });
     if zoom_by != 1.0 {
         app.camera.zoom_at(rect.center(), zoom_by, rect);
     }
+}
+
+const ICON_CUBE_OUTLINE: char = '\u{F01A7}';
+
+fn is_step_model(source_path: &str) -> bool {
+    std::path::Path::new(source_path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| matches!(extension.to_ascii_lowercase().as_str(), "step" | "stp"))
 }
 
 fn operation_status_overlay(ui: &egui::Ui, app: &TekkCamApp, rect: egui::Rect) {

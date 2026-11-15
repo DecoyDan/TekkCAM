@@ -84,6 +84,21 @@ pub fn selected_face_boundary(model: &Model, face_ids: &[u64]) -> Result<Geometr
     Ok(boundary)
 }
 
+/// Return every STEP source face so the 2D profile generator can use the
+/// complete shell to calculate its top-view silhouette. Selecting only
+/// individually upward-facing triangles can create internal edges and misses
+/// the outline behavior needed for an automatic profile.
+pub fn automatic_profile_faces(model: &Model) -> Vec<u64> {
+    let face_ids: HashSet<u64> = model
+        .bodies
+        .iter()
+        .flat_map(|body| body.triangle_face_ids.iter().copied())
+        .collect();
+    let mut face_ids: Vec<_> = face_ids.into_iter().collect();
+    face_ids.sort_unstable();
+    face_ids
+}
+
 fn sub(a: [f32; 3], b: [f32; 3]) -> [f64; 3] {
     [
         (a[0] - b[0]) as f64,

@@ -214,22 +214,6 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
 
             // ── CAM Operations section ────────────────────────────────────
             section_header(ui, "CAM OPERATIONS");
-            ui.add_space(4.0);
-
-            ui.horizontal(|ui| {
-                if ui
-                    .add_sized(
-                        [ui.available_width(), 24.0],
-                        egui::Button::new(egui::RichText::new("+ Add Operation").color(ACCENT))
-                            .frame(true),
-                    )
-                    .clicked()
-                {
-                    app.add_operation(crate::cam::operations::Operation::placeholder());
-                }
-            });
-            ui.add_space(4.0);
-
             let op_count = app.project.operations.len();
 
             // Extract display data for operations
@@ -347,7 +331,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
             if op_count == 0 {
                 ui.add_space(8.0);
                 ui.label(
-                    egui::RichText::new("No operations yet.\nUse CAM menu to add one.")
+                    egui::RichText::new("No operations yet.\nUse the toolbar to add one.")
                         .size(11.0)
                         .color(egui::Color32::from_rgb(100, 100, 120)),
                 );

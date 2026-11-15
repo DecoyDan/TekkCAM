@@ -36,6 +36,9 @@ pub struct Operation {
     pub source_layer_id: Option<u64>,
     #[serde(default)]
     pub source_face_ids: Vec<u64>,
+    /// When false, STEP face profile uses automatically detected upward-facing faces.
+    #[serde(default)]
+    pub manual_face_selection: bool,
     pub generated: bool,
     #[serde(default)]
     pub toolpath: Toolpath,
@@ -72,6 +75,7 @@ impl Operation {
             margin_mm: 0.0,
             source_layer_id: None,
             source_face_ids: Vec::new(),
+            manual_face_selection: false,
             generated: false,
             toolpath: Toolpath::default(),
             plugin_parameters: Vec::new(),

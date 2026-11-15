@@ -52,6 +52,7 @@ mod tests {
             tool: tool.clone(),
             source_layer_id: Some(42),
             source_face_ids: vec![1001, 1002],
+            manual_face_selection: true,
             ..Operation::placeholder()
         });
         project.setup.stock_size_mm = [200.0, 150.0, 30.0];

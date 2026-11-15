@@ -140,65 +140,118 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                                         face_ids.sort_unstable();
                                         face_ids.dedup();
                                         ui.label(format!("STEP model: {}", model.name));
-                                        ui.label(format!(
-                                            "Source faces · {} selected",
-                                            op.source_face_ids.len()
-                                        ));
-                                        ui.add_space(4.0);
-                                        let all_selected = !face_ids.is_empty()
-                                            && face_ids
-                                                .iter()
-                                                .all(|id| op.source_face_ids.contains(id));
-                                        ui.horizontal(|ui| {
-                                            if ui
-                                                .add_enabled(
-                                                    !face_ids.is_empty() && !all_selected,
-                                                    egui::Button::new("Select all"),
-                                                )
-                                                .clicked()
-                                            {
-                                                op.source_face_ids.clone_from(&face_ids);
-                                                project_changed = true;
-                                            }
-                                            if ui
-                                                .add_enabled(
-                                                    !op.source_face_ids.is_empty(),
-                                                    egui::Button::new("Clear"),
-                                                )
-                                                .clicked()
-                                            {
-                                                op.source_face_ids.clear();
-                                                project_changed = true;
-                                            }
-                                        });
-                                        egui::Frame::group(ui.style()).show(ui, |ui| {
-                                            ui.set_width(ui.available_width());
-                                            ui.set_max_height(180.0);
-                                            egui::ScrollArea::vertical()
-                                                .id_salt(("step_face_list", idx))
-                                                .auto_shrink([false, false])
-                                                .show(ui, |ui| {
-                                                    for face_id in face_ids {
-                                                        let mut selected =
-                                                            op.source_face_ids.contains(&face_id);
-                                                        if ui
-                                                            .checkbox(
-                                                                &mut selected,
-                                                                format!("Face {face_id}"),
-                                                            )
-                                                            .changed()
-                                                        {
-                                                            if selected {
-                                                                op.source_face_ids.push(face_id);
-                                                            } else {
-                                                                op.source_face_ids
-                                                                    .retain(|id| *id != face_id);
-                                                            }
-                                                            project_changed = true;
-                                                        }
+                                        let automatic_faces =
+                                            crate::cam::model_2d::automatic_profile_faces(model);
+                                        prop_row(ui, "Face selection", |ui| {
+                                            egui::ComboBox::from_id_salt((
+                                                "face_selection_mode",
+                                                idx,
+                                            ))
+                                            .selected_text(if op.manual_face_selection {
+                                                "Manual"
+                                            } else {
+                                                "Automatic"
+                                            })
+                                            .show_ui(
+                                                ui,
+                                                |ui| {
+                                                    if ui
+                                                        .selectable_value(
+                                                            &mut op.manual_face_selection,
+                                                            false,
+                                                            "Automatic",
+                                                        )
+                                                        .changed()
+                                                    {
+                                                        project_changed = true;
                                                     }
-                                                });
+                                                    if ui
+                                                        .selectable_value(
+                                                            &mut op.manual_face_selection,
+                                                            true,
+                                                            "Manual",
+                                                        )
+                                                        .changed()
+                                                    {
+                                                        if op.source_face_ids.is_empty() {
+                                                            op.source_face_ids
+                                                                .clone_from(&automatic_faces);
+                                                        }
+                                                        project_changed = true;
+                                                    }
+                                                },
+                                            );
                                         });
+                                        if !op.manual_face_selection {
+                                            ui.label(format!(
+                                                "Automatic top-view outline · {} source faces",
+                                                automatic_faces.len(),
+                                            ));
+                                        }
+                                        if op.manual_face_selection {
+                                            ui.label(format!(
+                                                "Source faces · {} selected",
+                                                op.source_face_ids.len()
+                                            ));
+                                            ui.add_space(4.0);
+                                            let all_selected = !face_ids.is_empty()
+                                                && face_ids
+                                                    .iter()
+                                                    .all(|id| op.source_face_ids.contains(id));
+                                            ui.horizontal(|ui| {
+                                                if ui
+                                                    .add_enabled(
+                                                        !face_ids.is_empty() && !all_selected,
+                                                        egui::Button::new("Select all"),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    op.source_face_ids.clone_from(&face_ids);
+                                                    project_changed = true;
+                                                }
+                                                if ui
+                                                    .add_enabled(
+                                                        !op.source_face_ids.is_empty(),
+                                                        egui::Button::new("Clear"),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    op.source_face_ids.clear();
+                                                    project_changed = true;
+                                                }
+                                            });
+                                            egui::Frame::group(ui.style()).show(ui, |ui| {
+                                                ui.set_width(ui.available_width());
+                                                ui.set_max_height(180.0);
+                                                egui::ScrollArea::vertical()
+                                                    .id_salt(("step_face_list", idx))
+                                                    .auto_shrink([false, false])
+                                                    .show(ui, |ui| {
+                                                        for face_id in face_ids {
+                                                            let mut selected = op
+                                                                .source_face_ids
+                                                                .contains(&face_id);
+                                                            if ui
+                                                                .checkbox(
+                                                                    &mut selected,
+                                                                    format!("Face {face_id}"),
+                                                                )
+                                                                .changed()
+                                                            {
+                                                                if selected {
+                                                                    op.source_face_ids
+                                                                        .push(face_id);
+                                                                } else {
+                                                                    op.source_face_ids.retain(
+                                                                        |id| *id != face_id,
+                                                                    );
+                                                                }
+                                                                project_changed = true;
+                                                            }
+                                                        }
+                                                    });
+                                            });
+                                        }
                                     } else {
                                         ui.label(
                                             egui::RichText::new(
@@ -528,10 +581,9 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
         app.ui_state.project_dirty = true;
         app.scene_sig.clear();
     }
-    show_fit_model_dialog(ctx, app);
 }
 
-fn show_fit_model_dialog(ctx: &egui::Context, app: &mut TekkCamApp) {
+pub fn show_fit_model_dialog(ctx: &egui::Context, app: &mut TekkCamApp) {
     if !app.ui_state.show_fit_model_dialog {
         return;
     }
@@ -852,13 +904,6 @@ pub fn show_setup_dialog(ctx: &egui::Context, app: &mut TekkCamApp) {
                                 model.bounds[1][1] - model.bounds[0][1],
                                 model.bounds[1][2] - model.bounds[0][2]
                             ));
-                            if ui.button("Fit model to stock…").clicked() {
-                                app.ui_state.fit_model_rotation_deg = model
-                                    .transform
-                                    .rotation_degrees
-                                    .map(|angle| angle.round() as i16);
-                                app.ui_state.show_fit_model_dialog = true;
-                            }
                             ui.add_space(8.0);
                         }
                         let setup = &mut app.project.setup;

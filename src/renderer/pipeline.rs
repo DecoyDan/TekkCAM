@@ -127,6 +127,9 @@ impl Scene {
                         .transformed_vertex(index as usize)
                         .unwrap_or(model.vertices[index as usize])
                 });
+                if !is_front_facing(points, orbit) {
+                    continue;
+                }
                 if orbit_preview {
                     append_shaded_triangle(&mut scene, points, base, orbit);
                 } else {
@@ -139,7 +142,11 @@ impl Scene {
                 }
             }
             if !orbit_preview {
-                faces.sort_by(|a, b| a.0.total_cmp(&b.0));
+                // camera_point() produces more-negative depth for points closer
+                // to the viewer, so paint far surfaces first and near surfaces
+                // last. Reversing this order lets the back of a STEP model
+                // obscure its front after orbit preview ends.
+                faces.sort_by(|a, b| b.0.total_cmp(&a.0));
                 for (_, points) in faces {
                     append_shaded_triangle(&mut scene, points, base, orbit);
                 }
@@ -496,6 +503,34 @@ fn camera_point(point: [f32; 3], orbit: [f32; 2]) -> [f32; 3] {
     let x = point[0] * cy - point[1] * sy;
     let y = point[0] * sy + point[1] * cy;
     [x, y * sp + point[2] * cp, y * cp - point[2] * sp]
+}
+
+fn is_front_facing(points: [[f32; 3]; 3], orbit: [f32; 2]) -> bool {
+    let u = [
+        points[1][0] - points[0][0],
+        points[1][1] - points[0][1],
+        points[1][2] - points[0][2],
+    ];
+    let v = [
+        points[2][0] - points[0][0],
+        points[2][1] - points[0][1],
+        points[2][2] - points[0][2],
+    ];
+    let normal = [
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    ];
+    let yaw = std::f32::consts::FRAC_PI_4 + orbit[0];
+    let pitch = (35.264_f32.to_radians() + orbit[1]).clamp(0.05, 1.52);
+    let (sy, cy) = yaw.sin_cos();
+    let (sp, cp) = pitch.sin_cos();
+    let camera_normal_z = normal[0] * sy * cp + normal[1] * cy * cp - normal[2] * sp;
+    let magnitude_squared = normal
+        .iter()
+        .map(|component| component * component)
+        .sum::<f32>();
+    magnitude_squared <= 1e-16 || camera_normal_z < 0.0
 }
 
 pub struct GeometryRenderer {

@@ -523,6 +523,16 @@ impl TekkCamApp {
             || !self.project.operations.is_empty()
     }
 
+    pub fn has_properties_content(&self) -> bool {
+        self.ui_state
+            .selected_layer
+            .is_some_and(|index| index < self.project.layers.len())
+            || self
+                .ui_state
+                .selected_operation
+                .is_some_and(|index| index < self.project.operations.len())
+    }
+
     pub fn create_new_project(&mut self) {
         let mut project = Project {
             name: "Untitled".into(),
@@ -864,7 +874,7 @@ impl TekkCamApp {
             self.ui_state.status_message = message;
             return;
         }
-        let operation = operation.clone();
+        let mut operation = operation.clone();
         let name = operation.name.clone();
         let is_profile = matches!(
             &operation.kind,
@@ -904,6 +914,11 @@ impl TekkCamApp {
             self.ui_state.console_log.push(format!("✖ {message}"));
             self.ui_state.status_message = "No visible STEP model".into();
             return;
+        }
+        if is_profile && !operation.manual_face_selection {
+            if let Some(model) = &model {
+                operation.source_face_ids = crate::cam::model_2d::automatic_profile_faces(model);
+            }
         }
         let geometry = self
             .project
@@ -1429,9 +1444,10 @@ impl eframe::App for TekkCamApp {
         }
 
         // ── Right properties panel ───────────────────────────────────────────
-        if self.ui_state.show_right_sidebar && has_active_project {
+        if self.ui_state.show_right_sidebar && self.has_properties_content() {
             properties::show(ctx, self);
         }
+        properties::show_fit_model_dialog(ctx, self);
         properties::show_tool_editor(ctx, self);
         properties::show_tool_database_dialog(ctx, self);
         properties::show_setup_dialog(ctx, self);

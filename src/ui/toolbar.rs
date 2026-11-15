@@ -10,6 +10,9 @@ const ICON_LAYOUT_SIDEBAR_RIGHT: char = '\u{EBF4}';
 const ICON_LAYOUT_SIDEBAR_RIGHT_OFF: char = '\u{EC00}';
 const ICON_LAYOUT_PANEL: char = '\u{EBF2}';
 const ICON_LAYOUT_PANEL_OFF: char = '\u{EC01}';
+const ICON_PLUS: char = '\u{F067}';
+const ICON_CODE: char = '\u{F121}';
+const ICON_CUBE_OUTLINE: char = '\u{F01A7}';
 
 pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
     let panel_bg = if app.ui_state.theme == crate::app::AppTheme::Light {
@@ -107,70 +110,6 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                     });
                 });
 
-                ui.menu_button("CAM", |ui| {
-                    let plugin_entries = app.operation_plugins();
-                    if ui.button("〰  Isolation Routing").clicked() {
-                        app.add_operation(crate::cam::operations::Operation::isolation());
-                        ui.close_menu();
-                    }
-                    if ui.button("⬡  Pocket Milling").clicked() {
-                        app.add_operation(crate::cam::operations::Operation::pocket());
-                        ui.close_menu();
-                    }
-                    if ui.button("⊙  Drilling").clicked() {
-                        app.add_operation(crate::cam::operations::Operation::drill());
-                        ui.close_menu();
-                    }
-                    if ui.button("▭  Contour Cut").clicked() {
-                        app.add_operation(crate::cam::operations::Operation::contour());
-                        ui.close_menu();
-                    }
-                    if ui.button("⌑  STEP Face Profile").clicked() {
-                        app.add_operation(crate::cam::operations::Operation::model_profile_2d());
-                        ui.close_menu();
-                    }
-                    if ui.button("▦  3D Stock Roughing").clicked() {
-                        app.add_operation(crate::cam::operations::Operation::roughing_3d());
-                        ui.close_menu();
-                    }
-                    if ui.button("〰  3D Raster Finish").clicked() {
-                        app.add_operation(crate::cam::operations::Operation::finish_raster_3d());
-                        ui.close_menu();
-                    }
-                    if ui.button("◎  3D Contour-Parallel Finish").clicked() {
-                        app.add_operation(crate::cam::operations::Operation::finish_contour_3d());
-                        ui.close_menu();
-                    }
-                    if ui.button("≋  3D Waterline Finish").clicked() {
-                        app.add_operation(crate::cam::operations::Operation::finish_waterline_3d());
-                        ui.close_menu();
-                    }
-                    if !plugin_entries.is_empty() {
-                        ui.separator();
-                        ui.label("Custom operations");
-                        for (id, name) in plugin_entries {
-                            if ui.button(format!("⚙  {name}")).clicked() {
-                                app.add_operation(crate::cam::operations::Operation::custom(
-                                    id,
-                                    crate::cam::tool::Tool::default(),
-                                ));
-                                ui.close_menu();
-                            }
-                        }
-                    }
-                    ui.separator();
-                    if ui.button("▶  Generate All").clicked() {
-                        for i in 0..app.project.operations.len() {
-                            app.generate_operation(i);
-                        }
-                        ui.close_menu();
-                    }
-                    if ui.button("≡  Generate G-code").clicked() {
-                        app.generate_gcode();
-                        ui.close_menu();
-                    }
-                });
-
                 ui.menu_button("Machine", |ui| {
                     if ui.button("🔌  Connect…").clicked() {
                         app.refresh_machine_ports();
@@ -236,29 +175,30 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                     ui.add_space(8.0);
 
                     if app.has_active_project() {
-                        if ui
-                            .add(
-                                egui::Button::new(
-                                    egui::RichText::new(
-                                        if app.ui_state.show_right_sidebar {
-                                            ICON_LAYOUT_SIDEBAR_RIGHT
-                                        } else {
-                                            ICON_LAYOUT_SIDEBAR_RIGHT_OFF
-                                        }
-                                        .to_string(),
+                        if app.has_properties_content()
+                            && ui
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new(
+                                            if app.ui_state.show_right_sidebar {
+                                                ICON_LAYOUT_SIDEBAR_RIGHT
+                                            } else {
+                                                ICON_LAYOUT_SIDEBAR_RIGHT_OFF
+                                            }
+                                            .to_string(),
+                                        )
+                                        .size(18.0)
+                                        .font(egui::FontId::new(
+                                            18.0,
+                                            egui::FontFamily::Name("sidebar_icons".into()),
+                                        ))
+                                        .color(ui.visuals().text_color()),
                                     )
-                                    .size(18.0)
-                                    .font(egui::FontId::new(
-                                        18.0,
-                                        egui::FontFamily::Name("sidebar_icons".into()),
-                                    ))
-                                    .color(ui.visuals().text_color()),
+                                    .fill(egui::Color32::TRANSPARENT)
+                                    .stroke(egui::Stroke::NONE),
                                 )
-                                .fill(egui::Color32::TRANSPARENT)
-                                .stroke(egui::Stroke::NONE),
-                            )
-                            .on_hover_text("Toggle properties and setup panel")
-                            .clicked()
+                                .on_hover_text("Toggle properties and setup panel")
+                                .clicked()
                         {
                             app.ui_state.show_right_sidebar = !app.ui_state.show_right_sidebar;
                         }
@@ -328,123 +268,210 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
             });
         });
 
-    egui::TopBottomPanel::top("tool_creation_toolbar")
-        .exact_height(36.0)
-        .frame(
-            egui::Frame::new()
-                .fill(panel_bg)
-                .inner_margin(egui::Margin::symmetric(12, 4)),
-        )
-        .show(ctx, |ui| {
-            ui.horizontal_centered(|ui| {
-                let (rect, response) =
-                    ui.allocate_exact_size(egui::vec2(30.0, 26.0), egui::Sense::click());
-                if response.hovered() || response.is_pointer_button_down_on() {
-                    ui.painter()
-                        .rect_filled(rect, 4.0, ui.visuals().widgets.hovered.bg_fill);
-                }
-                let center = rect.center();
-                let stroke = egui::Stroke::new(1.8_f32, ui.visuals().text_color());
-                ui.painter().rect_stroke(
-                    egui::Rect::from_min_max(
-                        egui::pos2(center.x - 3.5, center.y - 7.0),
-                        egui::pos2(center.x + 3.5, center.y + 1.0),
-                    ),
-                    1.0,
-                    stroke,
-                    egui::StrokeKind::Inside,
-                );
-                ui.painter().line_segment(
-                    [
-                        egui::pos2(center.x - 3.5, center.y + 1.0),
-                        egui::pos2(center.x, center.y + 7.0),
-                    ],
-                    stroke,
-                );
-                ui.painter().line_segment(
-                    [
-                        egui::pos2(center.x + 3.5, center.y + 1.0),
-                        egui::pos2(center.x, center.y + 7.0),
-                    ],
-                    stroke,
-                );
-                let badge = egui::pos2(rect.right() - 6.0, rect.top() + 6.0);
-                ui.painter().circle_filled(badge, 5.0, panel_bg);
-                ui.painter()
-                    .circle_stroke(badge, 4.5, egui::Stroke::new(1.2_f32, ACCENT));
-                ui.painter().line_segment(
-                    [
-                        egui::pos2(badge.x - 2.0, badge.y),
-                        egui::pos2(badge.x + 2.0, badge.y),
-                    ],
-                    egui::Stroke::new(1.2_f32, ACCENT),
-                );
-                ui.painter().line_segment(
-                    [
-                        egui::pos2(badge.x, badge.y - 2.0),
-                        egui::pos2(badge.x, badge.y + 2.0),
-                    ],
-                    egui::Stroke::new(1.2_f32, ACCENT),
-                );
-                if response.clicked() {
-                    app.ui_state.tool_editor = Some(crate::cam::tool::Tool::default());
-                    app.ui_state.tool_editor_index = None;
-                    app.ui_state.tool_editor_error = None;
-                }
-                response.on_hover_text("Create new tool");
-                if ui.button("Tools").clicked() {
-                    app.ui_state.show_tool_database = true;
-                }
-                if ui.button("Stock").clicked() {
-                    app.ui_state.show_stock_dialog = true;
-                }
-                if ui.button("Work").clicked() {
-                    app.ui_state.show_work_dialog = true;
-                }
-                if ui.button("Probe").clicked() {
-                    app.ui_state.show_probing_dialog = true;
-                }
-                ui.separator();
-                if ui
-                    .add(
-                        egui::Button::new(
-                            egui::RichText::new("▶ Simulate").color(egui::Color32::WHITE),
-                        )
-                        .fill(egui::Color32::from_rgb(40, 140, 60)),
+    if app.has_active_project() {
+        egui::TopBottomPanel::top("tool_creation_toolbar")
+            .exact_height(36.0)
+            .frame(
+                egui::Frame::new()
+                    .fill(panel_bg)
+                    .inner_margin(egui::Margin::symmetric(12, 4)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal_centered(|ui| {
+                    ui.menu_button(
+                        egui::RichText::new(ICON_PLUS.to_string()).font(egui::FontId::new(
+                            16.0,
+                            egui::FontFamily::Name("sidebar_icons".into()),
+                        )),
+                        |ui| {
+                            let operations = [
+                                (
+                                    "〰  Isolation Routing",
+                                    crate::cam::operations::Operation::isolation(),
+                                ),
+                                (
+                                    "⬡  Pocket Milling",
+                                    crate::cam::operations::Operation::pocket(),
+                                ),
+                                ("⊙  Drilling", crate::cam::operations::Operation::drill()),
+                                (
+                                    "▭  Contour Cut",
+                                    crate::cam::operations::Operation::contour(),
+                                ),
+                                (
+                                    "⌑  STEP Face Profile",
+                                    crate::cam::operations::Operation::model_profile_2d(),
+                                ),
+                                (
+                                    "▦  3D Stock Roughing",
+                                    crate::cam::operations::Operation::roughing_3d(),
+                                ),
+                                (
+                                    "〰  3D Raster Finish",
+                                    crate::cam::operations::Operation::finish_raster_3d(),
+                                ),
+                                (
+                                    "◎  3D Contour-Parallel Finish",
+                                    crate::cam::operations::Operation::finish_contour_3d(),
+                                ),
+                                (
+                                    "≋  3D Waterline Finish",
+                                    crate::cam::operations::Operation::finish_waterline_3d(),
+                                ),
+                            ];
+                            for (label, operation) in operations {
+                                if ui.button(label).clicked() {
+                                    app.add_operation(operation);
+                                    ui.close_menu();
+                                }
+                            }
+                            let plugin_entries = app.operation_plugins();
+                            if !plugin_entries.is_empty() {
+                                ui.separator();
+                                ui.label("Custom operations");
+                                for (id, name) in plugin_entries {
+                                    if ui.button(format!("⚙  {name}")).clicked() {
+                                        app.add_operation(
+                                            crate::cam::operations::Operation::custom(
+                                                id,
+                                                crate::cam::tool::Tool::default(),
+                                            ),
+                                        );
+                                        ui.close_menu();
+                                    }
+                                }
+                            }
+                        },
                     )
-                    .clicked()
-                {
-                    app.ui_state.simulator.stop();
-                    if app.ui_state.gcode_text.trim().is_empty() {
+                    .response
+                    .on_hover_text("Add CAM operation");
+                    if ui.button("▶ Generate All").clicked() {
+                        for i in 0..app.project.operations.len() {
+                            app.generate_operation(i);
+                        }
+                    }
+                    if ui
+                        .add(egui::Button::new(
+                            egui::RichText::new(ICON_CODE.to_string()).font(egui::FontId::new(
+                                16.0,
+                                egui::FontFamily::Name("sidebar_icons".into()),
+                            )),
+                        ))
+                        .on_hover_text("Generate G-code")
+                        .clicked()
+                    {
                         app.generate_gcode();
                     }
-                    match crate::gcode::parser::parse(&app.ui_state.gcode_text) {
-                        Ok(moves) => {
-                            app.ui_state.simulation_moves = moves;
-                            app.ui_state.simulator.reset();
-                            app.ui_state.status_message = "Simulating G-code".into();
-                            ctx.request_repaint();
+                    ui.separator();
+                    let (rect, response) =
+                        ui.allocate_exact_size(egui::vec2(30.0, 26.0), egui::Sense::click());
+                    if response.hovered() || response.is_pointer_button_down_on() {
+                        ui.painter()
+                            .rect_filled(rect, 4.0, ui.visuals().widgets.hovered.bg_fill);
+                    }
+                    let center = rect.center();
+                    let stroke = egui::Stroke::new(1.8_f32, ui.visuals().text_color());
+                    ui.painter().rect_stroke(
+                        egui::Rect::from_min_max(
+                            egui::pos2(center.x - 3.5, center.y - 7.0),
+                            egui::pos2(center.x + 3.5, center.y + 1.0),
+                        ),
+                        1.0,
+                        stroke,
+                        egui::StrokeKind::Inside,
+                    );
+                    ui.painter().line_segment(
+                        [
+                            egui::pos2(center.x - 3.5, center.y + 1.0),
+                            egui::pos2(center.x, center.y + 7.0),
+                        ],
+                        stroke,
+                    );
+                    ui.painter().line_segment(
+                        [
+                            egui::pos2(center.x + 3.5, center.y + 1.0),
+                            egui::pos2(center.x, center.y + 7.0),
+                        ],
+                        stroke,
+                    );
+                    let badge = egui::pos2(rect.right() - 6.0, rect.top() + 6.0);
+                    ui.painter().circle_filled(badge, 5.0, panel_bg);
+                    ui.painter()
+                        .circle_stroke(badge, 4.5, egui::Stroke::new(1.2_f32, ACCENT));
+                    ui.painter().line_segment(
+                        [
+                            egui::pos2(badge.x - 2.0, badge.y),
+                            egui::pos2(badge.x + 2.0, badge.y),
+                        ],
+                        egui::Stroke::new(1.2_f32, ACCENT),
+                    );
+                    ui.painter().line_segment(
+                        [
+                            egui::pos2(badge.x, badge.y - 2.0),
+                            egui::pos2(badge.x, badge.y + 2.0),
+                        ],
+                        egui::Stroke::new(1.2_f32, ACCENT),
+                    );
+                    if response.clicked() {
+                        app.ui_state.tool_editor = Some(crate::cam::tool::Tool::default());
+                        app.ui_state.tool_editor_index = None;
+                        app.ui_state.tool_editor_error = None;
+                    }
+                    response.on_hover_text("Create new tool");
+                    if ui.button("Tools").clicked() {
+                        app.ui_state.show_tool_database = true;
+                    }
+                    if ui.button("Stock").clicked() {
+                        app.ui_state.show_stock_dialog = true;
+                    }
+                    if ui.button("Work").clicked() {
+                        app.ui_state.show_work_dialog = true;
+                    }
+                    if ui.button("Probe").clicked() {
+                        app.ui_state.show_probing_dialog = true;
+                    }
+                    ui.separator();
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new("▶ Simulate").color(egui::Color32::WHITE),
+                            )
+                            .fill(egui::Color32::from_rgb(40, 140, 60)),
+                        )
+                        .clicked()
+                    {
+                        app.ui_state.simulator.stop();
+                        if app.ui_state.gcode_text.trim().is_empty() {
+                            app.generate_gcode();
                         }
-                        Err(error) => {
-                            app.ui_state.status_message = "Simulation failed".into();
-                            app.ui_state
-                                .console_log
-                                .push(format!("✖ Simulation failed: {error}"));
+                        match crate::gcode::parser::parse(&app.ui_state.gcode_text) {
+                            Ok(moves) => {
+                                app.ui_state.simulation_moves = moves;
+                                app.ui_state.simulator.reset();
+                                app.ui_state.status_message = "Simulating G-code".into();
+                                ctx.request_repaint();
+                            }
+                            Err(error) => {
+                                app.ui_state.status_message = "Simulation failed".into();
+                                app.ui_state
+                                    .console_log
+                                    .push(format!("✖ Simulation failed: {error}"));
+                            }
                         }
                     }
-                }
-                if ui
-                    .add(
-                        egui::Button::new(
-                            egui::RichText::new("⏹ Stop").color(egui::Color32::WHITE),
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new("⏹ Stop").color(egui::Color32::WHITE),
+                            )
+                            .fill(DANGER),
                         )
-                        .fill(DANGER),
-                    )
-                    .clicked()
-                {
-                    app.ui_state.simulator.stop();
-                    app.ui_state.status_message = "Simulation stopped".into();
-                }
+                        .clicked()
+                    {
+                        app.ui_state.simulator.stop();
+                        app.ui_state.status_message = "Simulation stopped".into();
+                    }
+                });
             });
-        });
+    }
 }
