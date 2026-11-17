@@ -21,6 +21,38 @@ impl Simulator {
     pub fn stop(&mut self) {
         self.running = false;
     }
+
+    pub fn seek(&mut self, moves: &[ToolMove], progress: f32) {
+        if moves.is_empty() {
+            return;
+        }
+
+        let step = progress.clamp(0.0, 1.0) as f64 * moves.len() as f64;
+        let index = step.floor() as usize;
+        if index >= moves.len() {
+            let last = moves.last().expect("moves is non-empty");
+            let (position, z) = movement_endpoint(last);
+            self.position = Some(position);
+            self.z = z;
+            self.move_index = moves.len();
+            self.fraction = 0.0;
+            self.running = false;
+            return;
+        }
+
+        let fraction = step - index as f64;
+        let mut start = [0.0, 0.0];
+        let mut start_z = 0.0;
+        for movement in &moves[..index] {
+            (start, start_z) = movement_endpoint(movement);
+        }
+        let (end, end_z) = movement_endpoint(&moves[index]);
+        self.position = Some(interpolate_xy(&moves[index], start, end, fraction));
+        self.z = start_z + (end_z - start_z) * fraction;
+        self.move_index = index;
+        self.fraction = fraction;
+    }
+
     pub fn advance(&mut self, moves: &[ToolMove], delta_seconds: f32) {
         if !self.running {
             return;
@@ -77,6 +109,15 @@ impl Simulator {
         if self.move_index >= moves.len() {
             self.running = false;
         }
+    }
+}
+
+fn movement_endpoint(movement: &ToolMove) -> ([f64; 2], f64) {
+    match movement {
+        ToolMove::Rapid { to, z } | ToolMove::Feed { to, z, .. } | ToolMove::Arc { to, z, .. } => {
+            (*to, *z)
+        }
+        ToolMove::Drill { at, depth, .. } => (*at, *depth),
     }
 }
 

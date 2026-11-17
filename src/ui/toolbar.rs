@@ -104,31 +104,6 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                     }
                     ui.separator();
                     ui.add_enabled_ui(app.ui_state.show_3d_view, |ui| {
-                        ui.menu_button("Orthographic view", |ui| {
-                            if ui.button("Top").clicked() {
-                                app.ui_state.model_orbit = [0.0, 0.905];
-                                app.ui_state.request_fit = true;
-                                ui.close_menu();
-                            }
-                            if ui.button("Front").clicked() {
-                                app.ui_state.model_orbit = [-std::f32::consts::FRAC_PI_4, -0.565];
-                                app.ui_state.request_fit = true;
-                                ui.close_menu();
-                            }
-                            if ui.button("Right").clicked() {
-                                app.ui_state.model_orbit = [std::f32::consts::FRAC_PI_4, -0.565];
-                                app.ui_state.request_fit = true;
-                                ui.close_menu();
-                            }
-                            if ui.button("Isometric").clicked() {
-                                app.ui_state.model_orbit = [0.0, 0.0];
-                                app.ui_state.request_fit = true;
-                                ui.close_menu();
-                            }
-                        });
-                    });
-                    ui.separator();
-                    ui.add_enabled_ui(app.ui_state.show_3d_view, |ui| {
                         ui.checkbox(
                             &mut app.ui_state.show_stock_removal,
                             "Stock removal preview (sampled)",
@@ -250,7 +225,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                                 .fill(egui::Color32::TRANSPARENT)
                                 .stroke(egui::Stroke::NONE),
                             )
-                            .on_hover_text("Toggle editor and console panel")
+                            .on_hover_text("Toggle editor and console panel (Ctrl+`)")
                             .clicked()
                         {
                             app.ui_state.show_console = !app.ui_state.show_console;
@@ -435,13 +410,29 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                             app.ui_state.status_message = "Face selection finished".into();
                         }
                     }
-                    if ui
-                        .add(egui::Button::new(
-                            egui::RichText::new(ICON_CODE.to_string()).font(egui::FontId::new(
-                                16.0,
+                    let (generate_rect, generate_response) =
+                        ui.allocate_exact_size(egui::vec2(30.0, 26.0), egui::Sense::click());
+                    if generate_response.hovered() || generate_response.is_pointer_button_down_on()
+                    {
+                        ui.painter().rect_filled(
+                            generate_rect,
+                            4.0,
+                            ui.visuals().widgets.hovered.bg_fill,
+                        );
+                    }
+                    ui.painter()
+                        .with_clip_rect(generate_rect)
+                        .text(
+                            generate_rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            ICON_CODE,
+                            egui::FontId::new(
+                                14.0,
                                 egui::FontFamily::Name("sidebar_icons".into()),
-                            )),
-                        ))
+                            ),
+                            ui.visuals().text_color(),
+                        );
+                    if generate_response
                         .on_hover_text("Generate G-code")
                         .clicked()
                     {

@@ -119,7 +119,313 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                 },
             );
             ui.painter().add(callback);
+            show_simulation_dro(ctx, ui, app, rect);
+            if app.ui_state.show_3d_view {
+                show_view_cube(ui, app, rect);
+            }
+            if !app.ui_state.simulation_moves.is_empty() {
+                show_simulation_controls(ctx, app);
+            }
         });
+}
+
+fn show_simulation_controls(ctx: &egui::Context, app: &mut TekkCamApp) {
+    let move_count = app.ui_state.simulation_moves.len();
+    let completed =
+        app.ui_state.simulator.move_index as f32 + app.ui_state.simulator.fraction as f32;
+    let mut progress = (completed / move_count as f32).clamp(0.0, 1.0);
+    egui::Area::new(egui::Id::new("simulation_playback_controls"))
+        .order(egui::Order::Foreground)
+        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -50.0))
+        .show(ctx, |ui| {
+            egui::Frame::new()
+                .fill(egui::Color32::from_rgba_premultiplied(18, 22, 30, 238))
+                .stroke(egui::Stroke::new(
+                    1.0_f32,
+                    egui::Color32::from_rgb(65, 83, 108),
+                ))
+                .corner_radius(egui::CornerRadius::same(7))
+                .inner_margin(egui::Margin::symmetric(10, 7))
+                .show(ui, |ui| {
+                    ui.set_min_width(720.0);
+                    ui.horizontal(|ui| {
+                        let play_pause = ui
+                            .add_sized(
+                                [30.0, 24.0],
+                                egui::Button::new(if app.ui_state.simulator.running {
+                                    "⏸"
+                                } else {
+                                    "▶"
+                                }),
+                            )
+                            .on_hover_text(if app.ui_state.simulator.running {
+                                "Pause simulation"
+                            } else {
+                                "Play simulation"
+                            });
+                        if play_pause.clicked() {
+                            if app.ui_state.simulator.running {
+                                app.ui_state.simulator.stop();
+                            } else if app.ui_state.simulator.move_index
+                                >= app.ui_state.simulation_moves.len()
+                            {
+                                app.ui_state.simulator.reset();
+                            } else {
+                                app.ui_state.simulator.running = true;
+                            }
+                            ctx.request_repaint();
+                        }
+                        let default_slider_width = ui.spacing().slider_width;
+                        ui.spacing_mut().slider_width = 480.0;
+                        let slider = ui.add_sized(
+                            [480.0, 18.0],
+                            egui::Slider::new(&mut progress, 0.0..=1.0).show_value(false),
+                        );
+                        ui.spacing_mut().slider_width = default_slider_width;
+                        if slider.changed() {
+                            app.ui_state
+                                .simulator
+                                .seek(&app.ui_state.simulation_moves, progress);
+                        }
+                        ui.label(format!("{:.0}%", progress * 100.0));
+                        ui.separator();
+                        for speed in [1.0_f32, 2.5, 5.0, 10.0] {
+                            ui.selectable_value(
+                                &mut app.ui_state.simulation_speed,
+                                speed,
+                                format!("{speed}×"),
+                            );
+                        }
+                    });
+                });
+        });
+}
+
+fn show_simulation_dro(ctx: &egui::Context, ui: &egui::Ui, app: &TekkCamApp, viewport: egui::Rect) {
+    let visible = !app.ui_state.simulation_moves.is_empty();
+    let animation = ctx.animate_value_with_time(
+        egui::Id::new("simulation_dro_slide"),
+        if visible { 1.0 } else { 0.0 },
+        0.22,
+    );
+    if animation <= 0.01 {
+        return;
+    }
+    let Some(position) = app.ui_state.simulator.position else {
+        return;
+    };
+    let units = app.ui_state.display_units;
+    let factor = units.factor();
+    let origin = app.project.setup.work_origin_mm;
+    let values = [
+        ("X", (position[0] + origin[0]) / factor),
+        ("Y", (position[1] + origin[1]) / factor),
+        ("Z", (app.ui_state.simulator.z + origin[2]) / factor),
+    ];
+    let rect = egui::Rect::from_min_size(
+        egui::pos2(
+            viewport.left() + 8.0,
+            viewport.top() + 30.0 - (1.0 - animation) * 58.0,
+        ),
+        egui::vec2(300.0, 52.0),
+    );
+    let painter = ui.painter_at(viewport);
+    painter.rect_filled(
+        rect,
+        egui::CornerRadius::same(6),
+        egui::Color32::from_rgba_premultiplied(
+            (18.0 * animation) as u8,
+            (22.0 * animation) as u8,
+            (30.0 * animation) as u8,
+            (230.0 * animation) as u8,
+        ),
+    );
+    painter.rect_stroke(
+        rect,
+        egui::CornerRadius::same(6),
+        egui::Stroke::new(
+            1.0_f32,
+            egui::Color32::from_rgba_unmultiplied(65, 83, 108, (255.0 * animation) as u8),
+        ),
+        egui::StrokeKind::Inside,
+    );
+    painter.text(
+        rect.left_top() + egui::vec2(8.0, 5.0),
+        egui::Align2::LEFT_TOP,
+        "SIMULATION DRO",
+        egui::FontId::proportional(9.0),
+        egui::Color32::from_rgba_unmultiplied(115, 205, 145, (255.0 * animation) as u8),
+    );
+    for (index, (axis, value)) in values.iter().enumerate() {
+        let x = rect.left() + 8.0 + index as f32 * 96.0;
+        let y = rect.top() + 24.0;
+        painter.text(
+            egui::pos2(x, y),
+            egui::Align2::LEFT_CENTER,
+            format!("{axis} {value:>8.3}{}", units.label()),
+            egui::FontId::monospace(10.5),
+            egui::Color32::from_rgba_unmultiplied(225, 232, 242, (255.0 * animation) as u8),
+        );
+    }
+}
+
+fn show_view_cube(ui: &mut egui::Ui, app: &mut TekkCamApp, viewport: egui::Rect) {
+    let side = 30.0;
+    let scale = 22.0;
+    let center = egui::pos2(viewport.right() - 48.0, viewport.top() + 70.0);
+    let yaw = std::f32::consts::FRAC_PI_4 + app.ui_state.model_orbit[0];
+    let pitch = (35.264_f32.to_radians() + app.ui_state.model_orbit[1]).clamp(-1.52, 1.52);
+    let (sy, cy) = yaw.sin_cos();
+    let (sp, cp) = pitch.sin_cos();
+    let project = |point: [f32; 3]| {
+        let x = point[0] * cy - point[1] * sy;
+        let y = point[0] * sy + point[1] * cy;
+        egui::pos2(
+            center.x + x * scale,
+            center.y - (y * sp + point[2] * cp) * scale,
+        )
+    };
+    let depth = |point: [f32; 3]| {
+        let y = point[0] * sy + point[1] * cy;
+        y * cp - point[2] * sp
+    };
+    let faces: [(&str, [f32; 3], [[f32; 3]; 4], egui::Color32, [f32; 3]); 6] = [
+        (
+            "Top",
+            [0.0, 0.0, 1.0],
+            [
+                [-1.0, -1.0, 1.0],
+                [1.0, -1.0, 1.0],
+                [1.0, 1.0, 1.0],
+                [-1.0, 1.0, 1.0],
+            ],
+            egui::Color32::from_rgb(83, 112, 156),
+            [0.0, 0.0, 1.0],
+        ),
+        (
+            "Bottom",
+            [0.0, 0.0, -1.0],
+            [
+                [-1.0, 1.0, -1.0],
+                [1.0, 1.0, -1.0],
+                [1.0, -1.0, -1.0],
+                [-1.0, -1.0, -1.0],
+            ],
+            egui::Color32::from_rgb(58, 68, 86),
+            [0.0, 0.0, -1.0],
+        ),
+        (
+            "Front",
+            [0.0, 1.0, 0.0],
+            [
+                [-1.0, 1.0, -1.0],
+                [1.0, 1.0, -1.0],
+                [1.0, 1.0, 1.0],
+                [-1.0, 1.0, 1.0],
+            ],
+            egui::Color32::from_rgb(71, 128, 190),
+            [0.0, 1.0, 0.0],
+        ),
+        (
+            "Back",
+            [0.0, -1.0, 0.0],
+            [
+                [1.0, -1.0, -1.0],
+                [-1.0, -1.0, -1.0],
+                [-1.0, -1.0, 1.0],
+                [1.0, -1.0, 1.0],
+            ],
+            egui::Color32::from_rgb(55, 91, 132),
+            [0.0, -1.0, 0.0],
+        ),
+        (
+            "Right",
+            [1.0, 0.0, 0.0],
+            [
+                [1.0, 1.0, -1.0],
+                [1.0, -1.0, -1.0],
+                [1.0, -1.0, 1.0],
+                [1.0, 1.0, 1.0],
+            ],
+            egui::Color32::from_rgb(90, 151, 198),
+            [1.0, 0.0, 0.0],
+        ),
+        (
+            "Left",
+            [-1.0, 0.0, 0.0],
+            [
+                [-1.0, -1.0, -1.0],
+                [-1.0, 1.0, -1.0],
+                [-1.0, 1.0, 1.0],
+                [-1.0, -1.0, 1.0],
+            ],
+            egui::Color32::from_rgb(62, 106, 151),
+            [-1.0, 0.0, 0.0],
+        ),
+    ];
+    let toward_camera = [sy * cp, cy * cp, -sp];
+    let mut visible: Vec<_> = faces
+        .iter()
+        .filter(|(_, normal, _, _, _)| {
+            normal[0] * toward_camera[0]
+                + normal[1] * toward_camera[1]
+                + normal[2] * toward_camera[2]
+                > 0.001
+        })
+        .collect();
+    visible.sort_by(|a, b| {
+        let avg_depth = |face: &&(&str, [f32; 3], [[f32; 3]; 4], egui::Color32, [f32; 3])| {
+            face.2.iter().map(|point| depth(*point)).sum::<f32>() / 4.0
+        };
+        avg_depth(a).total_cmp(&avg_depth(b))
+    });
+    let cube_rect = egui::Rect::from_center_size(center, egui::vec2(side * 2.4, side * 2.4));
+    let response = ui.interact(
+        cube_rect,
+        egui::Id::new("viewport_view_cube"),
+        egui::Sense::click(),
+    );
+    let painter = ui.painter_at(viewport);
+    for (label, _, vertices, color, normal) in &visible {
+        let points: Vec<_> = vertices.iter().map(|point| project(*point)).collect();
+        let face_center = project(*normal);
+        painter.add(egui::Shape::convex_polygon(
+            points,
+            *color,
+            egui::Stroke::new(1.2_f32, egui::Color32::from_rgb(205, 218, 238)),
+        ));
+        painter.text(
+            face_center,
+            egui::Align2::CENTER_CENTER,
+            *label,
+            egui::FontId::proportional(8.5),
+            egui::Color32::WHITE,
+        );
+    }
+    if response.clicked() {
+        if let Some(pointer) = response.interact_pointer_pos() {
+            if let Some((label, ..)) = visible.iter().min_by(|a, b| {
+                let da = project(a.4).distance_sq(pointer);
+                let db = project(b.4).distance_sq(pointer);
+                da.total_cmp(&db)
+            }) {
+                let flat_pitch = -0.565;
+                app.ui_state.model_orbit = match *label {
+                    "Top" => [0.0, -2.135],
+                    "Bottom" => [0.0, 0.905],
+                    "Front" => [-std::f32::consts::FRAC_PI_4, flat_pitch],
+                    "Right" => [std::f32::consts::FRAC_PI_4, flat_pitch],
+                    "Back" => [3.0 * std::f32::consts::FRAC_PI_4, flat_pitch],
+                    "Left" => [-3.0 * std::f32::consts::FRAC_PI_4, flat_pitch],
+                    _ => [0.0, 0.0],
+                };
+                app.ui_state.request_fit = true;
+            }
+        }
+    }
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
 }
 
 fn show_project_welcome(ui: &mut egui::Ui, app: &mut TekkCamApp, rect: egui::Rect) {
@@ -296,13 +602,22 @@ fn project_action_button(
 
 fn show_zoom_controls(ctx: &egui::Context, app: &mut TekkCamApp, rect: egui::Rect) {
     let mut zoom_by = 1.0;
+    let dro_visible = !app.ui_state.simulation_moves.is_empty();
+    let dro_offset = ctx.animate_value_with_time(
+        egui::Id::new("zoom_controls_below_dro"),
+        if dro_visible { 58.0 } else { 0.0 },
+        0.22,
+    );
     let fit_step_model = app
         .project
         .models
         .iter()
         .position(|model| model.visible && is_step_model(&model.source_path));
     egui::Area::new("viewport_zoom_controls".into())
-        .fixed_pos(egui::pos2(rect.left() + 8.0, rect.top() + 30.0))
+        .fixed_pos(egui::pos2(
+            rect.left() + 8.0,
+            rect.top() + 30.0 + dro_offset,
+        ))
         .show(ctx, |ui| {
             ui.vertical(|ui| {
                 if ui
@@ -604,8 +919,10 @@ fn handle_camera_input(ui: &mut egui::Ui, app: &mut TekkCamApp, rect: egui::Rect
     if orbit_preview {
         let delta = response.drag_delta();
         app.ui_state.model_orbit[0] += delta.x * 0.008;
-        app.ui_state.model_orbit[1] =
-            (app.ui_state.model_orbit[1] + delta.y * 0.008).clamp(-0.565, 0.905);
+        app.ui_state.model_orbit[1] = (app.ui_state.model_orbit[1] + delta.y * 0.008).clamp(
+            -1.52 - 35.264_f32.to_radians(),
+            1.52 - 35.264_f32.to_radians(),
+        );
     }
 
     // Zoom (scroll wheel) — only while the pointer is over the viewport

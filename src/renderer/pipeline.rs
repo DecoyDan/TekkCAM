@@ -517,7 +517,7 @@ pub fn view_triangle_is_front_facing(points: [[f32; 3]; 3], orbit: [f32; 2]) -> 
 
 fn camera_point(point: [f32; 3], orbit: [f32; 2]) -> [f32; 3] {
     let yaw = std::f32::consts::FRAC_PI_4 + orbit[0];
-    let pitch = (35.264_f32.to_radians() + orbit[1]).clamp(0.05, 1.52);
+    let pitch = (35.264_f32.to_radians() + orbit[1]).clamp(-1.52, 1.52);
     let (sy, cy) = yaw.sin_cos();
     let (sp, cp) = pitch.sin_cos();
     let x = point[0] * cy - point[1] * sy;
@@ -542,7 +542,7 @@ fn is_front_facing(points: [[f32; 3]; 3], orbit: [f32; 2]) -> bool {
         u[0] * v[1] - u[1] * v[0],
     ];
     let yaw = std::f32::consts::FRAC_PI_4 + orbit[0];
-    let pitch = (35.264_f32.to_radians() + orbit[1]).clamp(0.05, 1.52);
+    let pitch = (35.264_f32.to_radians() + orbit[1]).clamp(-1.52, 1.52);
     let (sy, cy) = yaw.sin_cos();
     let (sp, cp) = pitch.sin_cos();
     let camera_normal_z = normal[0] * sy * cp + normal[1] * cy * cp - normal[2] * sp;

@@ -315,6 +315,7 @@ pub struct UiState {
     pub simulator: crate::gcode::simulator::Simulator,
     pub show_gcode_editor: bool,
     pub simulation_moves: Vec<crate::cam::toolpath::ToolMove>,
+    pub simulation_speed: f32,
     pub show_machine_dialog: bool,
     pub show_machine_controls: bool,
     pub machine_ports: Vec<crate::machine::connection::PortInfo>,
@@ -401,6 +402,7 @@ impl Default for UiState {
             simulator: crate::gcode::simulator::Simulator::default(),
             show_gcode_editor: false,
             simulation_moves: Vec::new(),
+            simulation_speed: 1.0,
             show_machine_dialog: false,
             show_machine_controls: false,
             machine_ports: Vec::new(),
@@ -1394,6 +1396,12 @@ impl TekkCamApp {
 
 impl eframe::App for TekkCamApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let toggle_console =
+            ctx.input(|input| input.modifiers.ctrl && input.key_pressed(egui::Key::Backtick));
+        if toggle_console {
+            self.ui_state.show_console = !self.ui_state.show_console;
+        }
+
         self.poll_dialog_result();
         self.poll_step_imports();
         self.poll_generation();
@@ -1409,9 +1417,10 @@ impl eframe::App for TekkCamApp {
         }
         if self.ui_state.simulator.running {
             let dt = ctx.input(|i| i.stable_dt);
-            self.ui_state
-                .simulator
-                .advance(&self.ui_state.simulation_moves, dt);
+            self.ui_state.simulator.advance(
+                &self.ui_state.simulation_moves,
+                dt * self.ui_state.simulation_speed,
+            );
             if self.ui_state.simulator.running {
                 ctx.request_repaint();
             }
