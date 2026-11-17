@@ -1,6 +1,89 @@
 use std::collections::{HashMap, HashSet};
 
+use crate::cam::{
+    operations::Operation,
+    toolpath::{ToolMove, Toolpath},
+};
 use crate::workspace::{model::Model, object::Geometry};
+
+/// Generate a STEP profile from horizontal face boundaries while preserving
+/// each boundary's height relative to the model top.
+pub fn generate_level_profile(model: &Model, operation: &Operation) -> Result<Toolpath, String> {
+    if operation.source_face_ids.is_empty() {
+        return Err("select at least one STEP face for the model profile".into());
+    }
+    model.validate()?;
+    let selected: HashSet<u64> = operation.source_face_ids.iter().copied().collect();
+    let top = model.transformed_bounds()[1][2] as f64;
+    let mut edges: HashMap<([i64; 3], [i64; 3]), ([f32; 3], [f32; 3], usize)> = HashMap::new();
+    for (index, triangle) in model.triangles.iter().enumerate() {
+        let Some(face_id) = source_face_id(model, index) else {
+            continue;
+        };
+        if !selected.contains(&face_id) {
+            continue;
+        }
+        let Some(p) = triangle
+            .map(|i| model.transformed_vertex(i as usize))
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
+        else {
+            continue;
+        };
+        let n = cross(sub(p[1], p[0]), sub(p[2], p[0]));
+        let len = dot(n, n).sqrt();
+        if len <= 1e-12 || n[2] <= len * 0.05 {
+            continue;
+        }
+        for (a, b) in [(0, 1), (1, 2), (2, 0)] {
+            let quant = |v: [f32; 3]| v.map(|x| (x as f64 * 1e6).round() as i64);
+            let ka = quant(p[a]);
+            let kb = quant(p[b]);
+            let key = if ka < kb { (ka, kb) } else { (kb, ka) };
+            let e = edges.entry(key).or_insert((p[a], p[b], 0));
+            e.2 += 1;
+        }
+    }
+    let mut levels: std::collections::BTreeMap<i64, Geometry> = std::collections::BTreeMap::new();
+    for (_, (a, b, uses)) in edges {
+        if uses != 1 || (a[2] - b[2]).abs() > 1e-5 {
+            continue;
+        }
+        let level = ((a[2] as f64) * 1e5).round() as i64;
+        levels
+            .entry(level)
+            .or_default()
+            .lines
+            .extend([[a[0], a[1]], [b[0], b[1]]]);
+    }
+    // Faceted or open STEP meshes may not expose horizontal top-face edges.
+    // Preserve the legacy projected outline for those models.
+    if levels.is_empty() {
+        let geometry = selected_face_boundary(model, &operation.source_face_ids)?;
+        let mut fallback = operation.clone();
+        fallback.generate_from_geometry(&geometry)?;
+        return Ok(fallback.toolpath);
+    }
+    let mut result = Toolpath::default();
+    for (level, geometry) in levels {
+        let mut op = operation.clone();
+        op.generate_from_geometry(&geometry)?;
+        let dz = level as f64 / 1e5 - top;
+        for mut movement in op.toolpath.moves {
+            match &mut movement {
+                ToolMove::Rapid { z, .. } | ToolMove::Feed { z, .. } | ToolMove::Arc { z, .. } => {
+                    *z += dz
+                }
+                ToolMove::Drill { depth, retract, .. } => {
+                    *depth += dz;
+                    *retract += dz;
+                }
+            }
+            result.moves.push(movement);
+        }
+    }
+    Ok(result)
+}
 
 /// Project the outer edges of selected STEP source faces into XY geometry for
 /// the existing 2D contour toolpath generator. When every source face is

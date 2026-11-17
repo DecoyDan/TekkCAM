@@ -499,19 +499,15 @@ fn generate_command(args: &[String], json_output: bool) -> CliResult<()> {
                     .models
                     .first()
                     .ok_or((3, "STEP face profile requires an imported model".into()))?;
-                let geometry =
-                    crate::cam::model_2d::selected_face_boundary(model, &op.source_face_ids)
-                        .map_err(|e| (3, e))?;
                 let mut generated = op.clone();
-                let n = generated
-                    .generate_from_geometry(&geometry)
+                generated.toolpath = crate::cam::model_2d::generate_level_profile(model, &op)
                     .map_err(|e| (3, format!("operation '{}': {e}", op.name)))?;
+                generated.generated = !generated.toolpath.is_empty();
                 project.operations[index] = generated;
                 warnings.push(format!(
                     "operation '{}' used tessellated STEP face boundaries",
                     op.name
                 ));
-                let _ = n;
                 continue;
             }
             _ => {
