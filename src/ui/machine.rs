@@ -102,21 +102,26 @@ fn controls_window(ctx: &egui::Context, app: &mut TekkCamApp) {
                     .size(10.0)
                     .strong(),
             );
-            dro_row(ui, "MCS", app.ui_state.machine_status.machine_position);
-            dro_row(ui, "WCO", app.ui_state.machine_status.work_offset);
-            dro_row(ui, "WPos", app.ui_state.machine_status.work_position);
+            let units = app.ui_state.display_units;
+            dro_row(ui, "MCS", app.ui_state.machine_status.machine_position, units);
+            dro_row(ui, "WCO", app.ui_state.machine_status.work_offset, units);
+            dro_row(ui, "WPos", app.ui_state.machine_status.work_position, units);
             ui.separator();
             ui.label(egui::RichText::new("JOG").size(10.0).strong());
             ui.horizontal(|ui| {
                 ui.label("Step");
                 egui::ComboBox::from_id_salt("jog_step")
-                    .selected_text(format!("{} mm", app.ui_state.jog_step_mm))
+                    .selected_text(format!(
+                        "{:.4} {}",
+                        app.ui_state.jog_step_mm / units.factor(),
+                        units.label()
+                    ))
                     .show_ui(ui, |ui| {
                         for step in [0.1, 1.0, 10.0] {
                             ui.selectable_value(
                                 &mut app.ui_state.jog_step_mm,
                                 step,
-                                format!("{step} mm"),
+                                format!("{:.4} {}", step / units.factor(), units.label()),
                             );
                         }
                     });
@@ -258,12 +263,21 @@ fn jog_command(axis: char, direction: f64, step: f64) -> String {
     format!("$J=G91 {axis}{distance:.3} F800")
 }
 
-fn dro_row(ui: &mut egui::Ui, label: &str, position: Option<[f64; 3]>) {
+fn dro_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    position: Option<[f64; 3]>,
+    units: crate::app::DisplayUnits,
+) {
     ui.horizontal(|ui| {
         ui.label(label);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if let Some([x, y, z]) = position {
-                ui.monospace(format!("X {x:>9.3}   Y {y:>9.3}   Z {z:>9.3}"));
+                let factor = units.factor();
+                ui.monospace(format!(
+                    "X {:>9.3}   Y {:>9.3}   Z {:>9.3} {}",
+                    x / factor, y / factor, z / factor, units.label()
+                ));
             } else {
                 ui.monospace("X        —   Y        —   Z        —");
             }

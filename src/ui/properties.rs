@@ -649,6 +649,8 @@ pub fn show_fit_model_dialog(ctx: &egui::Context, app: &mut TekkCamApp) {
             });
             match &preview {
                 Ok(fit) => {
+                    let units = app.ui_state.display_units;
+                    let factor = units.factor();
                     let size = std::array::from_fn::<_, 3, _>(|axis| {
                         fit.bounds[1][axis] as f64 - fit.bounds[0][axis] as f64
                     });
@@ -658,12 +660,15 @@ pub fn show_fit_model_dialog(ctx: &egui::Context, app: &mut TekkCamApp) {
                         fit.rotation_degrees[0], fit.rotation_degrees[1], fit.rotation_degrees[2]
                     ));
                     ui.label(format!(
-                        "Resulting model: {:.2} × {:.2} × {:.2} mm",
-                        size[0], size[1], size[2]
+                        "Resulting model: {:.2} × {:.2} × {:.2} {}",
+                        size[0] / factor, size[1] / factor, size[2] / factor, units.label()
                     ));
                     ui.label(format!(
-                        "XY tool clearance: {:.2} mm · Z margin: {:.2} mm",
-                        fit.xy_margin_mm, fit.z_margin_mm
+                        "XY tool clearance: {:.2} {} · Z margin: {:.2} {}",
+                        fit.xy_margin_mm / factor,
+                        units.label(),
+                        fit.z_margin_mm / factor,
+                        units.label()
                     ));
                     ui.label("Centered in XY; model top aligned to the stock top face.");
                 }
@@ -789,7 +794,7 @@ pub fn show_tool_database_dialog(ctx: &egui::Context, app: &mut TekkCamApp) {
                                 ui.strong(
                                     egui::RichText::new(&tool.name).color(tool_name_color(app)),
                                 );
-                                ui.label(tool_dimensions(&tool));
+                                ui.label(tool_dimensions(&tool, app.ui_state.display_units));
                                 ui.horizontal(|ui| {
                                     if ui
                                         .small_button("👁")
@@ -814,7 +819,7 @@ pub fn show_tool_database_dialog(ctx: &egui::Context, app: &mut TekkCamApp) {
                                 ui.strong(
                                     egui::RichText::new(&tool.name).color(tool_name_color(app)),
                                 );
-                                ui.label(tool_dimensions(tool));
+                                ui.label(tool_dimensions(tool, app.ui_state.display_units));
                                 ui.horizontal(|ui| {
                                     if ui
                                         .small_button("👁")
@@ -898,11 +903,13 @@ pub fn show_setup_dialog(ctx: &egui::Context, app: &mut TekkCamApp) {
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                     .show(ui, |ui| {
                         if let Some(model) = app.project.models.iter().find(|model| model.visible) {
+                            let factor = units.factor();
                             ui.label(format!(
-                                "Model bounds: {:.2} × {:.2} × {:.2} mm",
-                                model.bounds[1][0] - model.bounds[0][0],
-                                model.bounds[1][1] - model.bounds[0][1],
-                                model.bounds[1][2] - model.bounds[0][2]
+                                "Model bounds: {:.2} × {:.2} × {:.2} {}",
+                                ((model.bounds[1][0] - model.bounds[0][0]) as f64) / factor,
+                                ((model.bounds[1][1] - model.bounds[0][1]) as f64) / factor,
+                                ((model.bounds[1][2] - model.bounds[0][2]) as f64) / factor,
+                                units.label()
                             ));
                             ui.add_space(8.0);
                         }
@@ -1033,6 +1040,7 @@ pub fn show_probing_dialog(ctx: &egui::Context, app: &mut TekkCamApp) {
     };
     let mut open = true;
     let mut error = None;
+    let units = app.ui_state.display_units;
     egui::Window::new("CNC Probing")
         .id(egui::Id::new("probing_dialog"))
         .default_width(440.0)
@@ -1057,43 +1065,25 @@ pub fn show_probing_dialog(ctx: &egui::Context, app: &mut TekkCamApp) {
                 ui.selectable_value(&mut settings.touch_negative, false, "+ direction");
             });
             ui.horizontal(|ui| {
-                ui.add(
-                    egui::DragValue::new(&mut settings.feed_mm_min)
-                        .speed(5.0)
-                        .range(1.0..=500.0)
-                        .prefix("Feed ")
-                        .suffix(" mm/min"),
-                );
-                ui.add(
-                    egui::DragValue::new(&mut settings.max_travel_mm)
-                        .speed(0.5)
-                        .range(0.1..=200.0)
-                        .prefix("Travel ")
-                        .suffix(" mm"),
-                );
+                let factor = units.factor();
+                let mut feed = settings.feed_mm_min / factor;
+                if ui.add(egui::DragValue::new(&mut feed)
+                    .speed(5.0 / factor).range(1.0 / factor..=500.0 / factor)
+                    .prefix("Feed ").suffix(format!("{}/min", units.label()))).changed() {
+                    settings.feed_mm_min = feed * factor;
+                }
+                ui.label(format!("Travel ({})", units.label()));
+                unit_drag(ui, &mut settings.max_travel_mm, units, 0.5, 0.1, 200.0);
             });
             ui.horizontal(|ui| {
-                ui.add(
-                    egui::DragValue::new(&mut settings.retract_mm)
-                        .speed(0.1)
-                        .range(0.1..=20.0)
-                        .prefix("Retract ")
-                        .suffix(" mm"),
-                );
+                ui.label(format!("Retract ({})", units.label()));
+                unit_drag(ui, &mut settings.retract_mm, units, 0.1, 0.1, 20.0);
                 if settings.touch_axis == ProbeAxis::Z {
-                    ui.add(
-                        egui::DragValue::new(&mut settings.touch_plate_thickness_mm)
-                            .speed(0.1)
-                            .prefix("Plate ")
-                            .suffix(" mm"),
-                    );
+                    ui.label(format!("Plate ({})", units.label()));
+                    unit_drag(ui, &mut settings.touch_plate_thickness_mm, units, 0.1, 0.0, 100.0);
                 } else {
-                    ui.add(
-                        egui::DragValue::new(&mut settings.probe_radius_mm)
-                            .speed(0.1)
-                            .prefix("Radius ")
-                            .suffix(" mm"),
-                    );
+                    ui.label(format!("Radius ({})", units.label()));
+                    unit_drag(ui, &mut settings.probe_radius_mm, units, 0.1, 0.0, 100.0);
                 }
             });
             let dialect = app.project.post_dialect;
@@ -1171,11 +1161,12 @@ pub fn show_probing_dialog(ctx: &egui::Context, app: &mut TekkCamApp) {
             }
             if let Some((position, success)) = app.ui_state.last_probe_result {
                 ui.label(format!(
-                    "Last probe: {} · X {:.3}, Y {:.3}, Z {:.3} mm",
+                    "Last probe: {} · X {:.3}, Y {:.3}, Z {:.3} {}",
                     if success { "triggered" } else { "failed" },
-                    position[0],
-                    position[1],
-                    position[2]
+                    position[0] / units.factor(),
+                    position[1] / units.factor(),
+                    position[2] / units.factor(),
+                    units.label()
                 ));
                 if success
                     && (dialect != crate::gcode::generator::Dialect::Grbl || machine_ready)
@@ -1239,20 +1230,19 @@ pub fn show_probing_dialog(ctx: &egui::Context, app: &mut TekkCamApp) {
                         ui.horizontal(|ui| {
                             ui.label(label);
                             for (axis, value) in ["X", "Y"].into_iter().zip(values.iter_mut()) {
-                                ui.add(
-                                    egui::DragValue::new(value)
-                                        .speed(0.5)
-                                        .prefix(format!("{axis} ")),
-                                );
+                                let factor = units.factor();
+                                let mut displayed = *value / factor;
+                                if ui.add(egui::DragValue::new(&mut displayed)
+                                    .speed(0.5 / factor)
+                                    .prefix(format!("{axis} "))
+                                    .suffix(format!(" {}", units.label()))).changed() {
+                                    *value = displayed * factor;
+                                }
                             }
                         });
                     }
-                    ui.add(
-                        egui::DragValue::new(&mut settings.grid_spacing_mm)
-                            .speed(0.5)
-                            .range(0.1..=500.0)
-                            .prefix("Grid spacing (mm): "),
-                    );
+                    ui.label(format!("Grid spacing ({})", units.label()));
+                    unit_drag(ui, &mut settings.grid_spacing_mm, units, 0.5, 0.1, 500.0);
                     ui.add(
                         egui::DragValue::new(&mut settings.max_grid_points)
                             .range(4..=10000)
@@ -1509,20 +1499,15 @@ fn validate_probe_grid(
     Ok(())
 }
 
-fn tool_dimensions(tool: &crate::cam::tool::Tool) -> String {
-    let unique_length = tool
-        .name
-        .split("OAL ")
-        .nth(1)
-        .map(|value| format!("OAL {value}"));
-    let flute_variant = tool
-        .name
-        .split("flute ")
-        .nth(1)
-        .map(|value| format!("flute {value}"));
-    unique_length
-        .or(flute_variant)
-        .unwrap_or_else(|| format!("Flute {:.1} mm", tool.flute_length_mm))
+fn tool_dimensions(tool: &crate::cam::tool::Tool, units: crate::app::DisplayUnits) -> String {
+    let factor = units.factor();
+    format!(
+        "Ø {:.2} {} · flute {:.1} {}",
+        tool.diameter_mm / factor,
+        units.label(),
+        tool.flute_length_mm / factor,
+        units.label()
+    )
 }
 
 fn tool_name_color(app: &TekkCamApp) -> egui::Color32 {
@@ -1587,6 +1572,8 @@ pub fn show_tool_details_dialog(ctx: &egui::Context, app: &mut TekkCamApp) {
     let Some(tool) = app.ui_state.tool_details.clone() else {
         return;
     };
+    let units = app.ui_state.display_units;
+    let factor = units.factor();
     let mut open = true;
     egui::Window::new("Tool description")
         .id(egui::Id::new("tool_details_dialog"))
@@ -1597,8 +1584,11 @@ pub fn show_tool_details_dialog(ctx: &egui::Context, app: &mut TekkCamApp) {
             ui.strong(&tool.name);
             ui.separator();
             ui.label(format!(
-                "{} mm diameter; {:.1} mm flute length.",
-                tool.diameter_mm, tool.flute_length_mm
+                "{} {} diameter; {:.1} {} flute length.",
+                tool.diameter_mm / factor,
+                units.label(),
+                tool.flute_length_mm / factor,
+                units.label()
             ));
             if !tool.description.is_empty() {
                 ui.label(&tool.description);
@@ -1609,8 +1599,12 @@ pub fn show_tool_details_dialog(ctx: &egui::Context, app: &mut TekkCamApp) {
                 ));
             }
             ui.label(format!(
-                "Default CAM settings: feed {:.0} mm/min, plunge {:.0} mm/min, spindle {:.0} RPM.",
-                tool.feed_rate_mm_min, tool.plunge_rate_mm_min, tool.spindle_rpm
+                "Default CAM settings: feed {:.0} {}/min, plunge {:.0} {}/min, spindle {:.0} RPM.",
+                tool.feed_rate_mm_min / factor,
+                units.label(),
+                tool.plunge_rate_mm_min / factor,
+                units.label(),
+                tool.spindle_rpm
             ));
         });
     if !open {
@@ -1625,6 +1619,7 @@ pub fn show_tool_editor(ctx: &egui::Context, app: &mut TekkCamApp) {
     let mut open = true;
     let mut save = false;
     let mut cancel = false;
+    let units = app.ui_state.display_units;
     egui::Window::new(if app.ui_state.tool_editor_index.is_some() {
         "Edit cutting tool"
     } else {
@@ -1656,18 +1651,29 @@ pub fn show_tool_editor(ctx: &egui::Context, app: &mut TekkCamApp) {
                         }
                     });
                 ui.end_row();
-                for (label, value) in [
-                    ("Diameter (mm)", &mut tool.diameter_mm),
-                    ("Flute length (mm)", &mut tool.flute_length_mm),
-                    ("Stickout (mm)", &mut tool.stickout_mm),
-                    ("Corner radius (mm)", &mut tool.corner_radius_mm),
-                    ("Holder clearance (mm)", &mut tool.holder_clearance_mm),
-                    ("Feed rate (mm/min)", &mut tool.feed_rate_mm_min),
-                    ("Plunge rate (mm/min)", &mut tool.plunge_rate_mm_min),
-                    ("Spindle speed (RPM)", &mut tool.spindle_rpm),
+                for (label, value, rate) in [
+                    ("Diameter", &mut tool.diameter_mm, false),
+                    ("Flute length", &mut tool.flute_length_mm, false),
+                    ("Stickout", &mut tool.stickout_mm, false),
+                    ("Corner radius", &mut tool.corner_radius_mm, false),
+                    ("Holder clearance", &mut tool.holder_clearance_mm, false),
+                    ("Feed rate", &mut tool.feed_rate_mm_min, true),
+                    ("Plunge rate", &mut tool.plunge_rate_mm_min, true),
+                    ("Spindle speed (RPM)", &mut tool.spindle_rpm, false),
                 ] {
-                    ui.label(label);
-                    ui.add(egui::DragValue::new(value).speed(0.1).min_decimals(1));
+                    let is_spindle = label.starts_with("Spindle");
+                    ui.label(if is_spindle {
+                        label.to_owned()
+                    } else if rate {
+                        format!("{} ({}/min)", label, units.label())
+                    } else {
+                        format!("{} ({})", label, units.label())
+                    });
+                    if is_spindle {
+                        ui.add(egui::DragValue::new(value).speed(0.1).min_decimals(1));
+                    } else {
+                        unit_drag(ui, value, units, 0.1, 0.0, 10000.0);
+                    }
                     ui.end_row();
                 }
             });

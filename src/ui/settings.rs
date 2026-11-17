@@ -70,15 +70,21 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
             });
             ui.separator();
             ui.heading("Default tool");
+            let display_units = app.ui_state.display_units;
+            let unit_factor = display_units.factor();
             egui::ComboBox::from_id_salt("default_project_tool")
                 .selected_text(format!(
-                    "{} ({:.2} mm)",
-                    app.project.default_tool.name, app.project.default_tool.diameter_mm
+                    "{} ({:.2} {})",
+                    app.project.default_tool.name,
+                    app.project.default_tool.diameter_mm / unit_factor,
+                    display_units.label()
                 ))
                 .show_ui(ui, |ui| {
                     for (index, name, diameter) in &tool_choices {
                         if ui
-                            .selectable_label(false, format!("{name} ({diameter:.2} mm)"))
+                            .selectable_label(false, format!(
+                                "{name} ({:.2} {})", diameter / unit_factor, display_units.label()
+                            ))
                             .clicked()
                         {
                             selected_default_tool = Some(*index);
@@ -89,7 +95,11 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                 app.project.default_tool = app.project.tools[index].clone();
                 app.ui_state.project_dirty = true;
             }
-            if ui.button("Use built-in 1 mm end mill").clicked() {
+            if ui.button(format!(
+                "Use built-in {:.2} {} end mill",
+                1.0 / unit_factor,
+                display_units.label()
+            )).clicked() {
                 app.project.default_tool = crate::cam::tool::Tool::default();
                 app.ui_state.project_dirty = true;
             }

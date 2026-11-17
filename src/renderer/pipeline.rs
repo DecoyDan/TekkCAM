@@ -131,11 +131,11 @@ impl Scene {
                     }
                 }
             }
-            let mut faces = if orbit_preview {
-                Vec::new()
+            let mut faces = Vec::with_capacity(if orbit_preview {
+                (model.triangles.len() + stride - 1) / stride
             } else {
-                Vec::with_capacity(model.triangles.len())
-            };
+                model.triangles.len()
+            });
             for (triangle_index, face) in model.triangles.iter().enumerate().step_by(stride) {
                 let points = face.map(|index| {
                     model
@@ -148,26 +148,20 @@ impl Scene {
                 let selected = triangle_face_ids[triangle_index]
                     .is_some_and(|face_id| selected_face_ids.contains(&face_id));
                 let color = if selected { [0.15, 0.95, 0.95] } else { base };
-                if orbit_preview {
-                    append_shaded_triangle(&mut scene, points, color, orbit);
-                } else {
-                    let depth = points
-                        .iter()
-                        .map(|p| camera_point(*p, orbit)[2])
-                        .sum::<f32>()
-                        / 3.0;
-                    faces.push((depth, points, color));
-                }
+                let depth = points
+                    .iter()
+                    .map(|p| camera_point(*p, orbit)[2])
+                    .sum::<f32>()
+                    / 3.0;
+                faces.push((depth, points, color));
             }
-            if !orbit_preview {
-                // camera_point() produces more-negative depth for points closer
-                // to the viewer, so paint far surfaces first and near surfaces
-                // last. Reversing this order lets the back of a STEP model
-                // obscure its front after orbit preview ends.
-                faces.sort_by(|a, b| b.0.total_cmp(&a.0));
-                for (_, points, color) in faces {
-                    append_shaded_triangle(&mut scene, points, color, orbit);
-                }
+            // camera_point() produces larger depth for points closer to the
+            // viewer. Paint the far faces first so nearer faces cover them.
+            // Sort the sampled drag preview too; otherwise source mesh order
+            // lets back faces flash over the front while the camera orbits.
+            faces.sort_by(|a, b| a.0.total_cmp(&b.0));
+            for (_, points, color) in faces {
+                append_shaded_triangle(&mut scene, points, color, orbit);
             }
         }
         // Show the configured stock envelope in 3D so model placement and

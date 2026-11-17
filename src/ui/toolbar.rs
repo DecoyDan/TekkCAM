@@ -104,6 +104,31 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                     }
                     ui.separator();
                     ui.add_enabled_ui(app.ui_state.show_3d_view, |ui| {
+                        ui.menu_button("Orthographic view", |ui| {
+                            if ui.button("Top").clicked() {
+                                app.ui_state.model_orbit = [0.0, 0.905];
+                                app.ui_state.request_fit = true;
+                                ui.close_menu();
+                            }
+                            if ui.button("Front").clicked() {
+                                app.ui_state.model_orbit = [-std::f32::consts::FRAC_PI_4, -0.565];
+                                app.ui_state.request_fit = true;
+                                ui.close_menu();
+                            }
+                            if ui.button("Right").clicked() {
+                                app.ui_state.model_orbit = [std::f32::consts::FRAC_PI_4, -0.565];
+                                app.ui_state.request_fit = true;
+                                ui.close_menu();
+                            }
+                            if ui.button("Isometric").clicked() {
+                                app.ui_state.model_orbit = [0.0, 0.0];
+                                app.ui_state.request_fit = true;
+                                ui.close_menu();
+                            }
+                        });
+                    });
+                    ui.separator();
+                    ui.add_enabled_ui(app.ui_state.show_3d_view, |ui| {
                         ui.checkbox(
                             &mut app.ui_state.show_stock_removal,
                             "Stock removal preview (sampled)",

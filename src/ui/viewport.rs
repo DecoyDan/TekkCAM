@@ -605,7 +605,7 @@ fn handle_camera_input(ui: &mut egui::Ui, app: &mut TekkCamApp, rect: egui::Rect
         let delta = response.drag_delta();
         app.ui_state.model_orbit[0] += delta.x * 0.008;
         app.ui_state.model_orbit[1] =
-            (app.ui_state.model_orbit[1] + delta.y * 0.008).clamp(-0.5, 1.2);
+            (app.ui_state.model_orbit[1] + delta.y * 0.008).clamp(-0.565, 0.905);
     }
 
     // Zoom (scroll wheel) — only while the pointer is over the viewport
@@ -746,7 +746,7 @@ fn overlay_info(ui: &mut egui::Ui, app: &mut TekkCamApp, rect: egui::Rect) {
     let factor = units.factor() as f32;
 
     let coord_text = if app.ui_state.show_3d_view {
-        format!("3D isometric view  ·  Zoom: {:.2}×", zoom_level)
+        format!("3D orthographic view  ·  Zoom: {:.2}×", zoom_level)
     } else if let Some(pos) = cursor_world {
         format!(
             "X: {:.3}  Y: {:.3} {}   Zoom: {:.2}×",
