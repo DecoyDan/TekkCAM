@@ -82,9 +82,14 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                 .show_ui(ui, |ui| {
                     for (index, name, diameter) in &tool_choices {
                         if ui
-                            .selectable_label(false, format!(
-                                "{name} ({:.2} {})", diameter / unit_factor, display_units.label()
-                            ))
+                            .selectable_label(
+                                false,
+                                format!(
+                                    "{name} ({:.2} {})",
+                                    diameter / unit_factor,
+                                    display_units.label()
+                                ),
+                            )
                             .clicked()
                         {
                             selected_default_tool = Some(*index);
@@ -95,11 +100,14 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                 app.project.default_tool = app.project.tools[index].clone();
                 app.ui_state.project_dirty = true;
             }
-            if ui.button(format!(
-                "Use built-in {:.2} {} end mill",
-                1.0 / unit_factor,
-                display_units.label()
-            )).clicked() {
+            if ui
+                .button(format!(
+                    "Use built-in {:.2} {} end mill",
+                    1.0 / unit_factor,
+                    display_units.label()
+                ))
+                .clicked()
+            {
                 app.project.default_tool = crate::cam::tool::Tool::default();
                 app.ui_state.project_dirty = true;
             }

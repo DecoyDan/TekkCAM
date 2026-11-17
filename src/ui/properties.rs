@@ -661,7 +661,10 @@ pub fn show_fit_model_dialog(ctx: &egui::Context, app: &mut TekkCamApp) {
                     ));
                     ui.label(format!(
                         "Resulting model: {:.2} × {:.2} × {:.2} {}",
-                        size[0] / factor, size[1] / factor, size[2] / factor, units.label()
+                        size[0] / factor,
+                        size[1] / factor,
+                        size[2] / factor,
+                        units.label()
                     ));
                     ui.label(format!(
                         "XY tool clearance: {:.2} {} · Z margin: {:.2} {}",
@@ -1067,9 +1070,16 @@ pub fn show_probing_dialog(ctx: &egui::Context, app: &mut TekkCamApp) {
             ui.horizontal(|ui| {
                 let factor = units.factor();
                 let mut feed = settings.feed_mm_min / factor;
-                if ui.add(egui::DragValue::new(&mut feed)
-                    .speed(5.0 / factor).range(1.0 / factor..=500.0 / factor)
-                    .prefix("Feed ").suffix(format!("{}/min", units.label()))).changed() {
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut feed)
+                            .speed(5.0 / factor)
+                            .range(1.0 / factor..=500.0 / factor)
+                            .prefix("Feed ")
+                            .suffix(format!("{}/min", units.label())),
+                    )
+                    .changed()
+                {
                     settings.feed_mm_min = feed * factor;
                 }
                 ui.label(format!("Travel ({})", units.label()));
@@ -1080,7 +1090,14 @@ pub fn show_probing_dialog(ctx: &egui::Context, app: &mut TekkCamApp) {
                 unit_drag(ui, &mut settings.retract_mm, units, 0.1, 0.1, 20.0);
                 if settings.touch_axis == ProbeAxis::Z {
                     ui.label(format!("Plate ({})", units.label()));
-                    unit_drag(ui, &mut settings.touch_plate_thickness_mm, units, 0.1, 0.0, 100.0);
+                    unit_drag(
+                        ui,
+                        &mut settings.touch_plate_thickness_mm,
+                        units,
+                        0.1,
+                        0.0,
+                        100.0,
+                    );
                 } else {
                     ui.label(format!("Radius ({})", units.label()));
                     unit_drag(ui, &mut settings.probe_radius_mm, units, 0.1, 0.0, 100.0);
@@ -1232,10 +1249,15 @@ pub fn show_probing_dialog(ctx: &egui::Context, app: &mut TekkCamApp) {
                             for (axis, value) in ["X", "Y"].into_iter().zip(values.iter_mut()) {
                                 let factor = units.factor();
                                 let mut displayed = *value / factor;
-                                if ui.add(egui::DragValue::new(&mut displayed)
-                                    .speed(0.5 / factor)
-                                    .prefix(format!("{axis} "))
-                                    .suffix(format!(" {}", units.label()))).changed() {
+                                if ui
+                                    .add(
+                                        egui::DragValue::new(&mut displayed)
+                                            .speed(0.5 / factor)
+                                            .prefix(format!("{axis} "))
+                                            .suffix(format!(" {}", units.label())),
+                                    )
+                                    .changed()
+                                {
                                     *value = displayed * factor;
                                 }
                             }

@@ -103,7 +103,12 @@ fn controls_window(ctx: &egui::Context, app: &mut TekkCamApp) {
                     .strong(),
             );
             let units = app.ui_state.display_units;
-            dro_row(ui, "MCS", app.ui_state.machine_status.machine_position, units);
+            dro_row(
+                ui,
+                "MCS",
+                app.ui_state.machine_status.machine_position,
+                units,
+            );
             dro_row(ui, "WCO", app.ui_state.machine_status.work_offset, units);
             dro_row(ui, "WPos", app.ui_state.machine_status.work_position, units);
             ui.separator();
@@ -276,7 +281,10 @@ fn dro_row(
                 let factor = units.factor();
                 ui.monospace(format!(
                     "X {:>9.3}   Y {:>9.3}   Z {:>9.3} {}",
-                    x / factor, y / factor, z / factor, units.label()
+                    x / factor,
+                    y / factor,
+                    z / factor,
+                    units.label()
                 ));
             } else {
                 ui.monospace("X        —   Y        —   Z        —");

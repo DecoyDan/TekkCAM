@@ -965,7 +965,8 @@ impl TekkCamApp {
                 let mut operation = operation;
                 let (mut path, label) = if is_profile {
                     let model = model.as_ref().expect("validated visible model");
-                    operation.toolpath = crate::cam::model_2d::generate_level_profile(model, &operation)?;
+                    operation.toolpath =
+                        crate::cam::model_2d::generate_level_profile(model, &operation)?;
                     operation.generated = !operation.toolpath.is_empty();
                     (operation.toolpath, "STEP face profile")
                 } else if is_roughing || finish_strategy.is_some() {
