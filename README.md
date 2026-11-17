@@ -9,6 +9,8 @@ The repository builds two executables:
 
 STEP machining uses imported tessellated geometry. Surface access, gouge and holder checks, and stock-removal estimates are approximate; see the project plan and CLI documentation for current limitations.
 
+Project site: [TekkCAM on GitHub Pages](https://risbern21.github.io/TekkCAM/).
+
 ## Build from source
 
 ### Requirements
