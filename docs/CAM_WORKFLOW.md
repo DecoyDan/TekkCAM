@@ -35,14 +35,3 @@ The toolbar's Probe dialog supports single-axis touch-off and rectangular 3D sur
 For touch-off, choose the axis, direction, feed, maximum travel, and probe radius or touch-plate thickness. A successful result can be explicitly applied to the selected work origin. For surface mapping, set XY bounds and spacing; the region must fit inside configured stock and the estimated Z travel must fit configured machine limits. Review the displayed grid and confirm wiring, start position, clearance, and feed before running a GRBL grid. The saved map can be visualized and optionally used to compensate generated toolpaths with bilinear interpolation relative to the map's first point. Paths outside the measured map are rejected; the app does not silently extrapolate.
 
 Probe maps and settings are saved with the project. Probe motion and imported measurements are hardware/controller dependent; verify the generated program, probe polarity, work coordinate system, and safe travel before use. Surface compensation is an approximation of measured height variation and does not replace collision review or an air cut.
-
-## Fusion-style 2D options
-
-Derived from a feature study of Fusion 360 CAM ([FUSION_CAM_EVIDENCE.md](FUSION_CAM_EVIDENCE.md)):
-
-- **Contour chaining.** Isolation, contour and STEP-profile operations link loose edges (within 0.001 mm) into continuous polylines, mitre the offset at corners (bevel beyond 2x the offset), and cut each chain in one pass without retracting between edges. The first edge of a chain fixes its travel direction, and the offset is to the left of that direction.
-- **Ramp entry.** A non-zero ramp angle (0-45 degrees) descends along the chain at the plunge feed instead of plunging vertically, then re-cuts the ramped section at full depth. A chain too short for the requested angle falls back to a vertical plunge. Ramps run along the cut path, not in a lead-in outside the part, so on closed profiles they cut inside the finished contour; use stock to leave or a sacrificial edge where that matters.
-- **Peck drilling.** A peck depth expands drilling into feed and retract moves. With a chip-break distance the tool backs out by that distance and continues; without it, it retracts fully to safe Z and re-enters 0.5 mm above the last depth. Dwell is not implemented.
-- **Pocket stepover.** Expressed as a fraction of the tool diameter (default 0.8).
-
-Not implemented: lead-in/out arcs, feed reduction on inner corners, adaptive clearing, and the Face, Chamfer2D, Slot and Thread strategies.
