@@ -62,27 +62,45 @@ pub fn generate_level_profile(model: &Model, operation: &Operation) -> Result<To
         let geometry = selected_face_boundary(model, &operation.source_face_ids)?;
         let mut fallback = operation.clone();
         fallback.generate_from_geometry(&geometry)?;
-        return Ok(fallback.toolpath);
+        let mut path = fallback.toolpath;
+        translate_toolpath_z(&mut path, top);
+        return Ok(path);
     }
     let mut result = Toolpath::default();
     for (level, geometry) in levels {
         let mut op = operation.clone();
         op.generate_from_geometry(&geometry)?;
-        let dz = level as f64 / 1e5 - top;
+        // Geometry-based 2D generation is relative to Z=0. Face levels are
+        // already in model/world coordinates, so add the absolute face Z.
+        let face_z = level as f64 / 1e5;
         for mut movement in op.toolpath.moves {
             match &mut movement {
                 ToolMove::Rapid { z, .. } | ToolMove::Feed { z, .. } | ToolMove::Arc { z, .. } => {
-                    *z += dz
+                    *z += face_z
                 }
                 ToolMove::Drill { depth, retract, .. } => {
-                    *depth += dz;
-                    *retract += dz;
+                    *depth += face_z;
+                    *retract += face_z;
                 }
             }
             result.moves.push(movement);
         }
     }
     Ok(result)
+}
+
+fn translate_toolpath_z(path: &mut Toolpath, offset: f64) {
+    for movement in &mut path.moves {
+        match movement {
+            ToolMove::Rapid { z, .. } | ToolMove::Feed { z, .. } | ToolMove::Arc { z, .. } => {
+                *z += offset;
+            }
+            ToolMove::Drill { depth, retract, .. } => {
+                *depth += offset;
+                *retract += offset;
+            }
+        }
+    }
 }
 
 /// Project the outer edges of selected STEP source faces into XY geometry for

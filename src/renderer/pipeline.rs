@@ -87,14 +87,22 @@ impl Scene {
         };
         for l in layers.iter().filter(|l| l.visible) {
             let color = l.color;
+            let layer_z = if view_3d && l.kind == crate::workspace::layer::LayerKind::Text {
+                (match setup.axis {
+                    WorkAxis::ZUp => setup.stock_origin_mm[2] + setup.stock_size_mm[2],
+                    WorkAxis::ZDown => setup.stock_origin_mm[2],
+                }) as f32
+            } else {
+                0.0
+            };
             scene
                 .triangles
                 .extend(l.geometry.triangles.iter().map(|p| Vertex {
-                    pos: project_point(p[0], p[1], 0.0, view_3d, orbit),
+                    pos: project_point(p[0], p[1], layer_z, view_3d, orbit),
                     color,
                 }));
             scene.lines.extend(l.geometry.lines.iter().map(|p| Vertex {
-                pos: project_point(p[0], p[1], 0.0, view_3d, orbit),
+                pos: project_point(p[0], p[1], layer_z, view_3d, orbit),
                 color,
             }));
         }

@@ -410,28 +410,16 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                             app.ui_state.status_message = "Face selection finished".into();
                         }
                     }
-                    let (generate_rect, generate_response) =
-                        ui.allocate_exact_size(egui::vec2(30.0, 26.0), egui::Sense::click());
-                    if generate_response.hovered() || generate_response.is_pointer_button_down_on()
-                    {
-                        ui.painter().rect_filled(
-                            generate_rect,
-                            4.0,
-                            ui.visuals().widgets.hovered.bg_fill,
-                        );
-                    }
-                    ui.painter()
-                        .with_clip_rect(generate_rect)
-                        .text(
-                            generate_rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            ICON_CODE,
-                            egui::FontId::new(
-                                14.0,
-                                egui::FontFamily::Name("sidebar_icons".into()),
-                            ),
-                            ui.visuals().text_color(),
-                        );
+                    let generate_response = ui.add_sized(
+                        [30.0, 26.0],
+                        egui::Button::new(
+                            egui::RichText::new(ICON_CODE.to_string())
+                                .font(egui::FontId::new(
+                                    14.0,
+                                    egui::FontFamily::Name("sidebar_icons".into()),
+                                )),
+                        ),
+                    );
                     if generate_response
                         .on_hover_text("Generate G-code")
                         .clicked()

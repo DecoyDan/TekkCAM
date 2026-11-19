@@ -41,6 +41,7 @@ pub fn load_layer(path: &str, index: usize) -> anyhow::Result<(Layer, Vec<String
         LayerKind::Svg => svg::parse(&text)?,
         LayerKind::Gcode => anyhow::bail!("G-code import is not implemented yet (Phase 4)"),
         LayerKind::Placeholder => anyhow::bail!("Unrecognised file type"),
+        LayerKind::Text => anyhow::bail!("Text layers are created in the layer sidebar"),
     };
     layer.geometry = out.geometry;
     layer.color = crate::workspace::layer::palette_color(&layer.kind, index);

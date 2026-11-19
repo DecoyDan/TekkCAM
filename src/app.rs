@@ -33,6 +33,21 @@ struct GenerationResult {
     >,
 }
 
+fn translate_toolpath_z(path: &mut crate::cam::toolpath::Toolpath, offset: f64) {
+    use crate::cam::toolpath::ToolMove;
+    for movement in &mut path.moves {
+        match movement {
+            ToolMove::Rapid { z, .. } | ToolMove::Feed { z, .. } | ToolMove::Arc { z, .. } => {
+                *z += offset;
+            }
+            ToolMove::Drill { depth, retract, .. } => {
+                *depth += offset;
+                *retract += offset;
+            }
+        }
+    }
+}
+
 /// Top-level application state
 pub struct TekkCamApp {
     /// The active project (layers, objects, operations)
@@ -293,6 +308,12 @@ pub struct UiState {
     pub fit_model_preview: Option<(usize, crate::workspace::model::ModelTransform)>,
     pub show_settings: bool,
     pub console_input: String,
+    pub text_layer_input: String,
+    pub text_layer_height_mm: f64,
+    pub show_text_dialog: bool,
+    pub placing_text_layer: Option<usize>,
+    pub text_placement_offset: [f64; 2],
+    pub text_resize: Option<TextResizeState>,
     pub console_log: Vec<String>,
     pub status_message: String,
     pub machine_connected: bool,
@@ -330,6 +351,14 @@ pub struct UiState {
     pub job_progress: Option<(usize, usize)>,
     dialog_receiver: Option<Receiver<DialogResult>>,
     dialog_pending: bool,
+}
+
+#[derive(Clone)]
+pub struct TextResizeState {
+    pub layer_index: usize,
+    pub original_geometry: crate::workspace::object::Geometry,
+    pub anchor: [f32; 2],
+    pub initial_handle: [f32; 2],
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -379,6 +408,12 @@ impl Default for UiState {
             fit_model_preview: None,
             show_settings: false,
             console_input: String::new(),
+            text_layer_input: String::new(),
+            text_layer_height_mm: 5.0,
+            show_text_dialog: false,
+            placing_text_layer: None,
+            text_placement_offset: [0.0; 2],
+            text_resize: None,
             console_log: vec![
                 format!("TekkCAM v{} — ready.", env!("CARGO_PKG_VERSION")),
                 "Load a Gerber / DXF / SVG file to begin.".into(),
@@ -936,6 +971,10 @@ impl TekkCamApp {
                 }
             })
             .map(|layer| layer.geometry.clone());
+        let text_layer = operation
+            .source_layer_id
+            .and_then(|id| self.project.layers.iter().find(|layer| layer.id == id))
+            .is_some_and(|layer| layer.kind == crate::workspace::layer::LayerKind::Text);
         if !model_required && geometry.is_none() {
             self.ui_state
                 .console_log
@@ -959,6 +998,12 @@ impl TekkCamApp {
             None
         };
         let plugins = self.plugin_registry.clone();
+        let stock_surface_z = match setup.axis {
+            crate::workspace::setup::WorkAxis::ZUp => {
+                setup.stock_origin_mm[2] + setup.stock_size_mm[2]
+            }
+            crate::workspace::setup::WorkAxis::ZDown => setup.stock_origin_mm[2],
+        };
         let tx = self.generation_tx.clone();
         self.generation_pending = true;
         self.ui_state.status_message = format!("Generating toolpath for '{name}'…");
@@ -997,6 +1042,9 @@ impl TekkCamApp {
                         geometry.as_ref().expect("validated geometry"),
                         &plugins,
                     )?;
+                    if text_layer {
+                        translate_toolpath_z(&mut operation.toolpath, stock_surface_z);
+                    }
                     (operation.toolpath, "CAM")
                 };
                 if let Some(map) = &surface_map {

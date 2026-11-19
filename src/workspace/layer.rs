@@ -11,6 +11,7 @@ pub enum LayerKind {
     Svg,
     Gcode,
     Placeholder,
+    Text,
 }
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -41,6 +42,17 @@ pub struct Layer {
 }
 
 impl Layer {
+    pub fn new_text(name: String, geometry: Geometry) -> Self {
+        Self {
+            id: next_id(),
+            name,
+            kind: LayerKind::Text,
+            visible: true,
+            file_path: None,
+            color: [0.95, 0.75, 0.25, 1.0],
+            geometry,
+        }
+    }
     /// Assign a process-unique id after deserializing a project.
     pub fn assign_fresh_id(&mut self) {
         self.id = next_id();

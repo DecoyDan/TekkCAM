@@ -41,17 +41,26 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
         )
         .show(ctx, |ui| {
             // ── Objects / Layers section ──────────────────────────────────
-            section_header(ui, "OBJECTS", header_color);
+            section_header(ui, "LAYERS & TEXT", header_color);
             ui.add_space(4.0);
 
-            // Add layer button
             ui.horizontal(|ui| {
                 if ui
                     .add_sized(
-                        [ui.available_width(), 24.0],
-                        egui::Button::new(egui::RichText::new("+ Add Layer").color(ACCENT))
-                            .frame(true),
+                        [28.0, 28.0],
+                        egui::Button::new(egui::RichText::new("tT").color(ACCENT)),
                     )
+                    .on_hover_text("Add text")
+                    .clicked()
+                {
+                    app.ui_state.show_text_dialog = true;
+                }
+                if ui
+                    .add_sized(
+                        [28.0, 28.0],
+                        egui::Button::new(egui::RichText::new("+").color(ACCENT)),
+                    )
+                    .on_hover_text("Add layer")
                     .clicked()
                 {
                     app.project.layers.push(Layer::new_placeholder());
@@ -73,6 +82,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                         LayerKind::Svg => "SVG",
                         LayerKind::Gcode => "NC",
                         LayerKind::Placeholder => "NEW",
+                        LayerKind::Text => "TXT",
                     };
                     let vis_icon = if l.visible { ICON_EYE } else { ICON_EYE_OFF };
                     let label = format!("{kind_icon} {}", l.name);
@@ -157,15 +167,6 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                 };
                 app.ui_state.project_dirty = true;
                 app.scene_sig.clear();
-            }
-
-            if layer_count == 0 {
-                ui.add_space(8.0);
-                ui.label(
-                    egui::RichText::new("No layers loaded.\nFile → Open to import a file.")
-                        .size(11.0)
-                        .color(egui::Color32::from_rgb(100, 100, 120)),
-                );
             }
 
             if !app.project.models.is_empty() {
@@ -400,6 +401,86 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                 });
             });
         });
+
+    if app.ui_state.show_text_dialog {
+        let mut open = app.ui_state.show_text_dialog;
+        let mut add_text = false;
+        let mut cancel = false;
+        egui::Window::new("Add Text")
+            .id(egui::Id::new("add_text_layer_dialog"))
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label("Text to engrave");
+                let response = ui.add_sized(
+                    [280.0, 24.0],
+                    egui::TextEdit::singleline(&mut app.ui_state.text_layer_input)
+                        .hint_text("Enter text"),
+                );
+                if app.ui_state.text_layer_input.is_empty() {
+                    response.request_focus();
+                }
+                ui.label("Text height");
+                ui.horizontal(|ui| {
+                    for (heading, height) in [
+                        ("H1", 12.0),
+                        ("H2", 10.0),
+                        ("H3", 8.0),
+                        ("H4", 6.0),
+                        ("H5", 5.0),
+                        ("H6", 4.0),
+                    ] {
+                        ui.selectable_value(
+                            &mut app.ui_state.text_layer_height_mm,
+                            height,
+                            heading,
+                        )
+                        .on_hover_text(format!("{height:.0} mm high"));
+                    }
+                });
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(
+                            !app.ui_state.text_layer_input.trim().is_empty(),
+                            egui::Button::new("Add to Stock"),
+                        )
+                        .clicked()
+                    {
+                        add_text = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        app.ui_state.show_text_dialog = open && !cancel;
+        if add_text {
+            let text = app.ui_state.text_layer_input.trim().to_owned();
+            let setup = &app.project.setup;
+            let height = app.ui_state.text_layer_height_mm;
+            let cell = height / 7.0;
+            let width = text.chars().count().saturating_sub(1) as f64 * cell * 6.0
+                + text.chars().count() as f64 * cell;
+            let origin = [
+                setup.stock_origin_mm[0] + (setup.stock_size_mm[0] - width) * 0.5,
+                setup.stock_origin_mm[1] + (setup.stock_size_mm[1] - height) * 0.5,
+            ];
+            let mut geometry = crate::workspace::object::Geometry::default();
+            geometry.add_text(&text, origin, height);
+            app.project
+                .layers
+                .push(Layer::new_text(format!("Text: {text}"), geometry));
+            let index = app.project.layers.len() - 1;
+            app.ui_state.selected_layer = Some(index);
+            app.ui_state.placing_text_layer = Some(index);
+            app.ui_state.text_placement_offset = [0.0; 2];
+            app.ui_state.text_layer_input.clear();
+            app.ui_state.show_text_dialog = false;
+            app.ui_state.project_dirty = true;
+            app.scene_sig.clear();
+        }
+    }
 }
 
 fn section_header(ui: &mut egui::Ui, title: &str, color: egui::Color32) {
