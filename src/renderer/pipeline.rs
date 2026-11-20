@@ -2,6 +2,8 @@
 use bytemuck::{Pod, Zeroable};
 use egui_wgpu::wgpu;
 use egui_wgpu::wgpu::util::DeviceExt;
+use image::RgbImage;
+use std::sync::OnceLock;
 
 use crate::{
     cam::{
@@ -22,12 +24,44 @@ pub struct Vertex {
     pub color: [f32; 4],
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+static WOOD_DIFFUSE: OnceLock<RgbImage> = OnceLock::new();
+
+fn wood_diffuse() -> &'static RgbImage {
+    WOOD_DIFFUSE.get_or_init(|| {
+        image::load_from_memory(include_bytes!(
+            "../../assets/materials/fine_grained_wood_1k.jpg"
+        ))
+        .expect("bundled wood texture should decode")
+        .to_rgb8()
+    })
+}
+
+fn wood_color(u: f32, v: f32) -> [f32; 3] {
+    let texture = wood_diffuse();
+    let x = (u.rem_euclid(1.0) * texture.width() as f32) as u32;
+    let y = ((1.0 - v).rem_euclid(1.0) * texture.height() as f32) as u32;
+    let pixel = texture.get_pixel(x.min(texture.width() - 1), y.min(texture.height() - 1));
+    pixel.0.map(|channel| {
+        let srgb = channel as f32 / 255.0;
+        if srgb <= 0.04045 {
+            srgb / 12.92
+        } else {
+            ((srgb + 0.055) / 1.055).powf(2.4)
+        }
+    })
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum StockMaterial {
     #[default]
     Wood,
     Aluminum,
     Steel,
+}
+
+pub struct SimulationProgress<'a> {
+    pub moves: &'a [ToolMove],
+    pub state: &'a crate::gcode::simulator::Simulator,
 }
 
 impl StockMaterial {
@@ -93,6 +127,95 @@ fn append_shaded_triangle(
     }
 }
 
+fn append_material_triangle(
+    scene: &mut Scene,
+    points: [[f32; 3]; 3],
+    colors: [[f32; 3]; 3],
+    orbit: [f32; 2],
+) {
+    let u = [
+        points[1][0] - points[0][0],
+        points[1][1] - points[0][1],
+        points[1][2] - points[0][2],
+    ];
+    let v = [
+        points[2][0] - points[0][0],
+        points[2][1] - points[0][1],
+        points[2][2] - points[0][2],
+    ];
+    let normal = [
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    ];
+    let magnitude = (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2])
+        .sqrt()
+        .max(1e-8);
+    let light = (normal[0] * 0.3 + normal[1] * 0.5 + normal[2] * 0.8) / magnitude;
+    let shade = 0.28 + 0.72 * light.max(0.0);
+    for (point, color) in points.into_iter().zip(colors) {
+        scene.triangles.push(Vertex {
+            pos: project_point(point[0], point[1], point[2], true, orbit),
+            color: [color[0] * shade, color[1] * shade, color[2] * shade, 1.0],
+        });
+    }
+}
+
+fn append_textured_face(scene: &mut Scene, quad: [[f32; 3]; 4], plane: usize, orbit: [f32; 2]) {
+    const TEXTURE_WIDTH_MM: f32 = 600.0;
+    let texture = wood_diffuse();
+    let length = |a: [f32; 3], b: [f32; 3]| {
+        ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+    };
+    let subdivisions = |world_length: f32| {
+        ((world_length / TEXTURE_WIDTH_MM * texture.width() as f32) / 2.0)
+            .ceil()
+            .clamp(8.0, 256.0) as usize
+    };
+    let nx = subdivisions(length(quad[0], quad[1]));
+    let ny = subdivisions(length(quad[0], quad[3]));
+    let point = |u: f32, v: f32| {
+        std::array::from_fn(|axis| {
+            quad[0][axis] * (1.0 - u) * (1.0 - v)
+                + quad[1][axis] * u * (1.0 - v)
+                + quad[2][axis] * u * v
+                + quad[3][axis] * (1.0 - u) * v
+        })
+    };
+    let color = |point: [f32; 3]| {
+        let (u, v) = match plane {
+            0 => (point[1], point[2]),
+            1 => (point[0], point[2]),
+            _ => (point[0], point[1]),
+        };
+        wood_color(u / TEXTURE_WIDTH_MM, v / TEXTURE_WIDTH_MM)
+    };
+    for y in 0..ny {
+        let v0 = y as f32 / ny as f32;
+        let v1 = (y + 1) as f32 / ny as f32;
+        for x in 0..nx {
+            let u0 = x as f32 / nx as f32;
+            let u1 = (x + 1) as f32 / nx as f32;
+            let p00 = point(u0, v0);
+            let p10 = point(u1, v0);
+            let p11 = point(u1, v1);
+            let p01 = point(u0, v1);
+            append_material_triangle(
+                scene,
+                [p00, p10, p11],
+                [color(p00), color(p10), color(p11)],
+                orbit,
+            );
+            append_material_triangle(
+                scene,
+                [p00, p11, p01],
+                [color(p00), color(p11), color(p01)],
+                orbit,
+            );
+        }
+    }
+}
+
 impl Scene {
     pub fn build(
         layers: &[Layer],
@@ -108,17 +231,23 @@ impl Scene {
         show_stock_removal: bool,
         render_stock: bool,
         stock_material: StockMaterial,
+        simulation: Option<SimulationProgress<'_>>,
     ) -> Self {
         let mut scene = Scene {
             revision,
             ..Default::default()
         };
         if view_3d && render_stock {
-            append_stock_solid(&mut scene, setup, stock_material, orbit);
+            append_stock_solid(&mut scene, setup, stock_material, orbit, render_stock);
         }
         for l in layers.iter().filter(|l| l.visible) {
             let color = l.color;
-            let layer_z = if view_3d && l.kind == crate::workspace::layer::LayerKind::Text {
+            let layer_z = if view_3d
+                && matches!(
+                    l.kind,
+                    crate::workspace::layer::LayerKind::Text
+                        | crate::workspace::layer::LayerKind::Drawing
+                ) {
                 (match setup.axis {
                     WorkAxis::ZUp => setup.stock_origin_mm[2] + setup.stock_size_mm[2],
                     WorkAxis::ZDown => setup.stock_origin_mm[2],
@@ -255,7 +384,14 @@ impl Scene {
             }
         }
         if view_3d && show_stock_removal && !orbit_preview {
-            append_stock_removal_preview(&mut scene, operations, setup, orbit);
+            append_stock_removal_preview(
+                &mut scene,
+                operations,
+                setup,
+                orbit,
+                stock_material,
+                simulation,
+            );
         }
         if view_3d {
             if let Some(model) = models.iter().find(|model| model.visible) {
@@ -336,6 +472,7 @@ fn append_stock_solid(
     setup: &MachiningSetup,
     material: StockMaterial,
     orbit: [f32; 2],
+    textured: bool,
 ) {
     let min = setup.stock_origin_mm;
     let max = [
@@ -370,24 +507,51 @@ fn append_stock_solid(
         [3, 0, 4],
         [3, 4, 7], // left
     ];
-    let base = material.color();
-    let mut triangles: Vec<_> = faces
-        .into_iter()
-        .map(|face| {
-            let points = [p[face[0]], p[face[1]], p[face[2]]];
-            let depth = points
-                .iter()
-                .map(|point| camera_point(*point, orbit)[2])
-                .sum::<f32>()
-                / 3.0;
-            (depth, points)
-        })
-        .collect();
-    triangles.sort_by(|a, b| a.0.total_cmp(&b.0));
-    for (_, points) in triangles {
-        append_shaded_triangle(scene, points, base, orbit);
-    }
-    if material == StockMaterial::Wood {
+    let base = if textured {
+        material.color()
+    } else {
+        [0.58, 0.62, 0.68]
+    };
+    let quads = [
+        ([p[0], p[3], p[2], p[1]], 2), // bottom
+        ([p[4], p[5], p[6], p[7]], 2), // top
+        ([p[0], p[1], p[5], p[4]], 1), // front
+        ([p[1], p[2], p[6], p[5]], 0), // right
+        ([p[2], p[3], p[7], p[6]], 1), // back
+        ([p[3], p[0], p[4], p[7]], 0), // left
+    ];
+    if textured && material == StockMaterial::Wood {
+        let mut ordered = quads.to_vec();
+        ordered.sort_by(|a, b| {
+            let depth = |quad: &[[f32; 3]; 4]| {
+                quad.iter()
+                    .map(|point| camera_point(*point, orbit)[2])
+                    .sum::<f32>()
+                    / 4.0
+            };
+            depth(&a.0).total_cmp(&depth(&b.0))
+        });
+        for (quad, plane) in ordered {
+            append_textured_face(scene, quad, plane, orbit);
+        }
+    } else {
+        let mut triangles: Vec<_> = faces
+            .into_iter()
+            .map(|face| {
+                let points = [p[face[0]], p[face[1]], p[face[2]]];
+                let depth = points
+                    .iter()
+                    .map(|point| camera_point(*point, orbit)[2])
+                    .sum::<f32>()
+                    / 3.0;
+                (depth, points)
+            })
+            .collect();
+        triangles.sort_by(|a, b| a.0.total_cmp(&b.0));
+        for (_, points) in triangles {
+            append_shaded_triangle(scene, points, base, orbit);
+        }
+        // Fine parallel highlights suggest brushed metal without adding visual clutter.
         let top_z = match setup.axis {
             WorkAxis::ZUp => max[2] as f32,
             WorkAxis::ZDown => min[2] as f32,
@@ -398,15 +562,19 @@ fn append_stock_solid(
             } else {
                 -0.0005
             };
-        let grain = [0.38, 0.19, 0.08, 0.32];
-        for fraction in [0.24_f32, 0.43, 0.62, 0.81] {
+        for band in 0..20 {
+            let fraction = (band as f32 + 0.5) / 20.0;
             let y = p[0][1] + (p[3][1] - p[0][1]) * fraction;
-            for x in [p[0][0], p[1][0]] {
-                scene.lines.push(Vertex {
-                    pos: project_point(x, y, z, true, orbit),
-                    color: grain,
-                });
-            }
+            scene.lines.extend([
+                Vertex {
+                    pos: project_point(p[0][0], y, z, true, orbit),
+                    color: [0.9, 0.95, 1.0, 0.12],
+                },
+                Vertex {
+                    pos: project_point(p[1][0], y, z, true, orbit),
+                    color: [0.9, 0.95, 1.0, 0.12],
+                },
+            ]);
         }
     }
 }
@@ -419,10 +587,21 @@ fn append_stock_removal_preview(
     operations: &[Operation],
     setup: &MachiningSetup,
     orbit: [f32; 2],
+    material: StockMaterial,
+    simulation: Option<SimulationProgress<'_>>,
 ) {
-    const CELLS: usize = 64;
-    let nx = CELLS;
-    let ny = CELLS;
+    // Keep animated updates lighter, while using a sub-pixel surface grid for
+    // the settled preview so small cutter radii appear smooth on screen.
+    let cells = if simulation
+        .as_ref()
+        .is_some_and(|simulation| simulation.state.running)
+    {
+        256
+    } else {
+        512
+    };
+    let nx = cells;
+    let ny = cells;
     let origin = setup.stock_origin_mm;
     let dx = setup.stock_size_mm[0] / nx as f64;
     let dy = setup.stock_size_mm[1] / ny as f64;
@@ -436,10 +615,45 @@ fn append_stock_removal_preview(
     };
     let mut heights = vec![top; (nx + 1) * (ny + 1)];
 
-    for operation in operations.iter().filter(|op| op.generated) {
-        let radius = operation.tool.diameter_mm * 0.5;
-        let mut current = [0.0, 0.0, top];
-        for movement in &operation.toolpath.moves {
+    let preview_paths: Vec<(Vec<ToolMove>, f64, [f64; 2])> = if let Some(simulation) = simulation {
+        let index = simulation.state.move_index.min(simulation.moves.len());
+        let mut moves = simulation.moves[..index].to_vec();
+        if index < simulation.moves.len() && simulation.state.fraction > 0.0 {
+            let at = simulation.state.position.unwrap_or([0.0, 0.0]);
+            moves.push(partial_simulation_move(
+                &simulation.moves[index],
+                at,
+                simulation.state.z,
+            ));
+        }
+        let origin = setup.work_origin_mm;
+        moves = moves
+            .into_iter()
+            .map(|movement| move_to_world(movement, origin))
+            .collect();
+        let radius = operations
+            .iter()
+            .find(|operation| operation.generated)
+            .map(|operation| operation.tool.diameter_mm * 0.5)
+            .unwrap_or(0.5);
+        vec![(moves, radius, [origin[0], origin[1]])]
+    } else {
+        operations
+            .iter()
+            .filter(|operation| operation.generated)
+            .map(|operation| {
+                (
+                    operation.toolpath.moves.clone(),
+                    operation.tool.diameter_mm * 0.5,
+                    [0.0, 0.0],
+                )
+            })
+            .collect()
+    };
+
+    for (moves, radius, start_xy) in preview_paths {
+        let mut current = [start_xy[0], start_xy[1], top];
+        for movement in &moves {
             match movement {
                 ToolMove::Rapid { to, z } => current = [to[0], to[1], *z],
                 ToolMove::Feed { to, z, .. } => {
@@ -521,16 +735,120 @@ fn append_stock_removal_preview(
             heights[iy * (nx + 1) + ix] as f32,
         ]
     };
-    let base = [0.25, 0.72, 0.46];
+    let base = material.color();
     for iy in 0..ny {
         for ix in 0..nx {
             let a = point(ix, iy);
             let b = point(ix + 1, iy);
             let c = point(ix + 1, iy + 1);
             let d = point(ix, iy + 1);
-            append_shaded_triangle(scene, [a, b, c], base, orbit);
-            append_shaded_triangle(scene, [a, c, d], base, orbit);
+            let removed =
+                (top - (a[2] as f64 + b[2] as f64 + c[2] as f64 + d[2] as f64) * 0.25).max(0.0);
+            let cut_tint = match material {
+                StockMaterial::Wood => [0.9, 0.61, 0.31],
+                StockMaterial::Aluminum => [0.79, 0.87, 0.91],
+                StockMaterial::Steel => [0.61, 0.69, 0.76],
+            };
+            let blend =
+                (removed as f32 / (setup.stock_size_mm[2] as f32 * 0.08).max(0.1)).clamp(0.0, 0.32);
+            let cut_base = std::array::from_fn(|channel| {
+                base[channel] * (1.0 - blend) + cut_tint[channel] * blend
+            });
+            if material == StockMaterial::Wood {
+                let texture_color = |point: [f32; 3]| {
+                    let albedo = wood_color(point[0] / 600.0, point[1] / 600.0);
+                    std::array::from_fn(|channel| {
+                        albedo[channel] * (1.0 - blend) + cut_tint[channel] * blend
+                    })
+                };
+                append_material_triangle(
+                    scene,
+                    [a, b, c],
+                    [texture_color(a), texture_color(b), texture_color(c)],
+                    orbit,
+                );
+                append_material_triangle(
+                    scene,
+                    [a, c, d],
+                    [texture_color(a), texture_color(c), texture_color(d)],
+                    orbit,
+                );
+            } else {
+                append_shaded_triangle(scene, [a, b, c], cut_base, orbit);
+                append_shaded_triangle(scene, [a, c, d], cut_base, orbit);
+            }
         }
+    }
+}
+
+fn partial_simulation_move(movement: &ToolMove, at: [f64; 2], z: f64) -> ToolMove {
+    match movement {
+        ToolMove::Rapid { .. } => ToolMove::Rapid { to: at, z },
+        ToolMove::Feed { feed_mm_min, .. } => ToolMove::Feed {
+            to: at,
+            z,
+            feed_mm_min: *feed_mm_min,
+        },
+        ToolMove::Arc {
+            center_offset,
+            clockwise,
+            feed_mm_min,
+            ..
+        } => ToolMove::Arc {
+            to: at,
+            center_offset: *center_offset,
+            z,
+            clockwise: *clockwise,
+            feed_mm_min: *feed_mm_min,
+        },
+        ToolMove::Drill {
+            retract,
+            plunge_mm_min,
+            ..
+        } => ToolMove::Drill {
+            at,
+            depth: z,
+            retract: *retract,
+            plunge_mm_min: *plunge_mm_min,
+        },
+    }
+}
+
+fn move_to_world(movement: ToolMove, origin: [f64; 3]) -> ToolMove {
+    match movement {
+        ToolMove::Rapid { to, z } => ToolMove::Rapid {
+            to: [to[0] + origin[0], to[1] + origin[1]],
+            z: z + origin[2],
+        },
+        ToolMove::Feed { to, z, feed_mm_min } => ToolMove::Feed {
+            to: [to[0] + origin[0], to[1] + origin[1]],
+            z: z + origin[2],
+            feed_mm_min,
+        },
+        ToolMove::Arc {
+            to,
+            center_offset,
+            z,
+            clockwise,
+            feed_mm_min,
+        } => ToolMove::Arc {
+            to: [to[0] + origin[0], to[1] + origin[1]],
+            center_offset,
+            z: z + origin[2],
+            clockwise,
+            feed_mm_min,
+        },
+        ToolMove::Drill {
+            at,
+            depth,
+            retract,
+            plunge_mm_min,
+        } => ToolMove::Drill {
+            at: [at[0] + origin[0], at[1] + origin[1]],
+            depth: depth + origin[2],
+            retract: retract + origin[2],
+            plunge_mm_min,
+        },
     }
 }
 
@@ -546,7 +864,9 @@ fn apply_cut_segment(
     end: [f64; 3],
     cutter_radius: f64,
 ) {
-    let radius = cutter_radius + (dx * dx + dy * dy).sqrt() * 0.5;
+    // Sample the actual cutter footprint. Expanding by half a grid cell made
+    // each cut visibly oversized and square at the preview's old resolution.
+    let radius = cutter_radius;
     let min_x = (((start[0].min(end[0]) - radius - origin[0]) / dx).floor() as isize)
         .clamp(0, nx as isize) as usize;
     let max_x = (((start[0].max(end[0]) + radius - origin[0]) / dx).ceil() as isize)

@@ -92,16 +92,6 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                         app.ui_state.show_grid = !app.ui_state.show_grid;
                         ui.close_menu();
                     }
-                    let view_label = if app.ui_state.show_3d_view {
-                        "✓  Isometric 3D View"
-                    } else {
-                        "▱  Isometric 3D View"
-                    };
-                    if ui.button(view_label).clicked() {
-                        app.ui_state.show_3d_view = !app.ui_state.show_3d_view;
-                        app.ui_state.request_fit = true;
-                        ui.close_menu();
-                    }
                     ui.separator();
                     ui.add_enabled_ui(app.ui_state.show_3d_view, |ui| {
                         ui.checkbox(

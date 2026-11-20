@@ -311,6 +311,11 @@ pub struct UiState {
     pub text_layer_input: String,
     pub text_layer_height_mm: f64,
     pub show_text_dialog: bool,
+    pub show_drawing_dialog: bool,
+    pub drawing_strokes: Vec<Vec<[f32; 2]>>,
+    pub drawing_width_mm: f32,
+    pub drawing_height_mm: f32,
+    pub editing_text_layer: Option<usize>,
     pub placing_text_layer: Option<usize>,
     pub text_placement_offset: [f64; 2],
     pub text_resize: Option<TextResizeState>,
@@ -322,7 +327,6 @@ pub struct UiState {
     pub show_3d_view: bool,
     pub show_stock_removal: bool,
     pub render_stock: bool,
-    pub stock_material: crate::renderer::pipeline::StockMaterial,
     pub show_left_sidebar: bool,
     pub show_right_sidebar: bool,
     pub show_console: bool,
@@ -362,6 +366,7 @@ pub struct TextResizeState {
     pub original_geometry: crate::workspace::object::Geometry,
     pub anchor: [f32; 2],
     pub initial_handle: [f32; 2],
+    pub original_height_mm: Option<f64>,
 }
 
 #[derive(Clone)]
@@ -370,6 +375,7 @@ pub struct TextRotateState {
     pub original_geometry: crate::workspace::object::Geometry,
     pub center: [f32; 2],
     pub initial_angle: f32,
+    pub initial_rotation_degrees: f64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -422,6 +428,11 @@ impl Default for UiState {
             text_layer_input: String::new(),
             text_layer_height_mm: 5.0,
             show_text_dialog: false,
+            show_drawing_dialog: false,
+            drawing_strokes: Vec::new(),
+            drawing_width_mm: 50.0,
+            drawing_height_mm: 30.0,
+            editing_text_layer: None,
             placing_text_layer: None,
             text_placement_offset: [0.0; 2],
             text_resize: None,
@@ -436,7 +447,6 @@ impl Default for UiState {
             show_3d_view: false,
             show_stock_removal: false,
             render_stock: false,
-            stock_material: crate::renderer::pipeline::StockMaterial::Wood,
             show_left_sidebar: true,
             show_right_sidebar: true,
             show_console: true,
@@ -608,9 +618,27 @@ impl TekkCamApp {
 
     pub fn add_operation(&mut self, mut operation: crate::cam::operations::Operation) {
         operation.tool = self.project.default_tool.clone();
+        if operation.source_layer_id.is_none() {
+            operation.source_layer_id = self
+                .ui_state
+                .selected_layer
+                .and_then(|index| self.project.layers.get(index))
+                .filter(|layer| layer.visible && !layer.geometry.is_empty())
+                .map(|layer| layer.id);
+        }
         self.project.operations.push(operation);
         self.ui_state.selected_operation = Some(self.project.operations.len() - 1);
         self.ui_state.project_dirty = true;
+    }
+
+    pub fn reset_stock_surface(&mut self) {
+        for operation in &mut self.project.operations {
+            operation.generate();
+        }
+        self.ui_state.simulation_moves.clear();
+        self.ui_state.simulator = crate::gcode::simulator::Simulator::default();
+        self.ui_state.gcode_text.clear();
+        self.scene_sig.clear();
     }
 
     pub fn register_operation_plugin(
@@ -904,7 +932,26 @@ impl TekkCamApp {
         if self.generation_pending {
             return;
         }
-        let Some(operation) = self.project.operations.get(index) else {
+        if self
+            .project
+            .operations
+            .get(index)
+            .is_some_and(|operation| operation.source_layer_id.is_none())
+        {
+            let selected_source = self
+                .ui_state
+                .selected_layer
+                .and_then(|layer_index| self.project.layers.get(layer_index))
+                .filter(|layer| layer.visible && !layer.geometry.is_empty())
+                .map(|layer| layer.id);
+            if let (Some(source_id), Some(operation)) =
+                (selected_source, self.project.operations.get_mut(index))
+            {
+                operation.source_layer_id = Some(source_id);
+                self.ui_state.project_dirty = true;
+            }
+        }
+        let Some(operation) = self.project.operations.get(index).cloned() else {
             return;
         };
         let mut setup_issues = Vec::new();
@@ -927,7 +974,7 @@ impl TekkCamApp {
             self.ui_state.status_message = message;
             return;
         }
-        let mut operation = operation.clone();
+        let mut operation = operation;
         let name = operation.name.clone();
         let is_profile = matches!(
             &operation.kind,
@@ -980,8 +1027,13 @@ impl TekkCamApp {
                 layer.visible && !layer.geometry.is_empty()
             }
         });
-        let text_layer = source_layer
-            .is_some_and(|layer| layer.kind == crate::workspace::layer::LayerKind::Text);
+        let surface_layer = source_layer.is_some_and(|layer| {
+            matches!(
+                layer.kind,
+                crate::workspace::layer::LayerKind::Text
+                    | crate::workspace::layer::LayerKind::Drawing
+            )
+        });
         let geometry = source_layer.map(|layer| layer.geometry.clone());
         if !model_required && geometry.is_none() {
             self.ui_state
@@ -1050,7 +1102,7 @@ impl TekkCamApp {
                         geometry.as_ref().expect("validated geometry"),
                         &plugins,
                     )?;
-                    if text_layer {
+                    if surface_layer {
                         translate_toolpath_z(&mut operation.toolpath, stock_surface_z);
                     }
                     (operation.toolpath, "CAM")

@@ -53,7 +53,24 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                     .on_hover_text("Add text")
                     .clicked()
                 {
+                    app.ui_state.editing_text_layer = None;
+                    app.ui_state.text_layer_input.clear();
+                    app.ui_state.text_layer_height_mm = 5.0;
                     app.ui_state.show_text_dialog = true;
+                }
+                let pencil_button = ui
+                    .add_sized(
+                        [28.0, 28.0],
+                        egui::Button::new(
+                            egui::RichText::new("✏")
+                                .font(egui::FontId::proportional(17.0))
+                                .color(ACCENT),
+                        ),
+                    )
+                    .on_hover_text("Draw a design");
+                if pencil_button.clicked() {
+                    app.ui_state.drawing_strokes.clear();
+                    app.ui_state.show_drawing_dialog = true;
                 }
                 if ui
                     .add_sized(
@@ -83,6 +100,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                         LayerKind::Gcode => "NC",
                         LayerKind::Placeholder => "NEW",
                         LayerKind::Text => "TXT",
+                        LayerKind::Drawing => "DRW",
                     };
                     let vis_icon = if l.visible { ICON_EYE } else { ICON_EYE_OFF };
                     let label = format!("{kind_icon} {}", l.name);
@@ -101,7 +119,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                     egui::Color32::TRANSPARENT
                 };
 
-                let response = egui::Frame::new()
+                let row_button_response = egui::Frame::new()
                     .fill(row_bg)
                     .corner_radius(egui::CornerRadius::same(4))
                     .inner_margin(egui::Margin::symmetric(6, 3))
@@ -113,29 +131,31 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                                     egui::FontFamily::Name("sidebar_icons".into()),
                                 ))
                                 .color(row_text);
-                            if ui
+                            let visibility_response = ui
                                 .add_sized(
                                     [22.0, 20.0],
                                     egui::Button::new(visibility_icon).frame(false),
                                 )
-                                .on_hover_text(if *_vis { "Hide layer" } else { "Show layer" })
-                                .clicked()
-                            {
+                                .on_hover_text(if *_vis { "Hide layer" } else { "Show layer" });
+                            if visibility_response.clicked() {
                                 toggle_vis = Some(i);
                             }
-                            if ui
-                                .selectable_label(
-                                    *is_selected,
-                                    egui::RichText::new(label).size(13.0).color(row_text),
-                                )
-                                .clicked()
-                            {
+                            let layer_button = egui::Button::new(
+                                egui::RichText::new(label).size(13.0).color(row_text),
+                            )
+                            .selected(*is_selected)
+                            .frame(false);
+                            let layer_response =
+                                ui.add_sized([ui.available_width(), 24.0], layer_button);
+                            if layer_response.clicked() {
                                 select_layer = Some(i);
                             }
-                        });
+                            layer_response
+                        })
+                        .inner
                     })
-                    .response;
-                response.context_menu(|ui| {
+                    .inner;
+                row_button_response.context_menu(|ui| {
                     if ui.button("Delete layer").clicked() {
                         delete_layer = Some(i);
                         ui.close_menu();
@@ -151,10 +171,42 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
             }
             if let Some(i) = select_layer {
                 app.ui_state.selected_layer = Some(i);
+                if let Some(layer) = app
+                    .project
+                    .layers
+                    .get(i)
+                    .filter(|layer| layer.kind == LayerKind::Text)
+                {
+                    let input = layer
+                        .text_data
+                        .as_ref()
+                        .map(|data| data.content.clone())
+                        .or_else(|| layer.name.strip_prefix("Text: ").map(str::to_owned))
+                        .unwrap_or_default();
+                    let height = layer
+                        .text_data
+                        .as_ref()
+                        .map(|data| data.height_mm)
+                        .or_else(|| {
+                            layer
+                                .geometry
+                                .bounds()
+                                .map(|(min, max)| (max[1] - min[1]).max(1.0) as f64)
+                        })
+                        .unwrap_or(5.0);
+                    app.ui_state.text_layer_input = input;
+                    app.ui_state.text_layer_height_mm = height;
+                    app.ui_state.editing_text_layer = Some(i);
+                    app.ui_state.show_text_dialog = true;
+                    app.ui_state.placing_text_layer = None;
+                    app.ui_state.text_resize = None;
+                    app.ui_state.text_rotate = None;
+                }
             }
             if let Some(i) = delete_layer {
                 let layer_id = app.project.layers[i].id;
                 app.project.layers.remove(i);
+                app.reset_stock_surface();
                 for operation in &mut app.project.operations {
                     if operation.source_layer_id == Some(layer_id) {
                         operation.source_layer_id = None;
@@ -240,6 +292,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                 if let Some(index) = delete_model.filter(|index| *index < app.project.models.len())
                 {
                     app.project.models.remove(index);
+                    app.reset_stock_surface();
                     app.ui_state.selected_model = match app.ui_state.selected_model {
                         Some(selected) if selected == index => (!app.project.models.is_empty())
                             .then_some(index.min(app.project.models.len().saturating_sub(1))),
@@ -378,83 +431,271 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
 
     if app.ui_state.show_text_dialog {
         let mut open = app.ui_state.show_text_dialog;
-        let mut add_text = false;
+        let editing_index = app.ui_state.editing_text_layer;
+        let mut save_text = false;
         let mut cancel = false;
-        egui::Window::new("Add Text")
-            .id(egui::Id::new("add_text_layer_dialog"))
-            .collapsible(false)
-            .resizable(false)
-            .open(&mut open)
-            .show(ctx, |ui| {
-                ui.label("Text to engrave");
-                let response = ui.add_sized(
-                    [280.0, 24.0],
-                    egui::TextEdit::singleline(&mut app.ui_state.text_layer_input)
-                        .hint_text("Enter text"),
-                );
-                if app.ui_state.text_layer_input.is_empty() {
-                    response.request_focus();
-                }
-                ui.label("Text height");
-                ui.horizontal(|ui| {
-                    for (heading, height) in [
-                        ("H1", 12.0),
-                        ("H2", 10.0),
-                        ("H3", 8.0),
-                        ("H4", 6.0),
-                        ("H5", 5.0),
-                        ("H6", 4.0),
-                    ] {
-                        ui.selectable_value(
-                            &mut app.ui_state.text_layer_height_mm,
-                            height,
-                            heading,
-                        )
+        egui::Window::new(if editing_index.is_some() {
+            "Edit Text"
+        } else {
+            "Add Text"
+        })
+        .id(egui::Id::new("add_text_layer_dialog"))
+        .collapsible(false)
+        .resizable(false)
+        .open(&mut open)
+        .show(ctx, |ui| {
+            ui.label("Text to engrave");
+            let response = ui.add_sized(
+                [280.0, 24.0],
+                egui::TextEdit::singleline(&mut app.ui_state.text_layer_input)
+                    .hint_text("Enter text"),
+            );
+            if app.ui_state.text_layer_input.is_empty() {
+                response.request_focus();
+            }
+            ui.label("Text height");
+            ui.horizontal(|ui| {
+                for (heading, height) in [
+                    ("H1", 12.0),
+                    ("H2", 10.0),
+                    ("H3", 8.0),
+                    ("H4", 6.0),
+                    ("H5", 5.0),
+                    ("H6", 4.0),
+                ] {
+                    ui.selectable_value(&mut app.ui_state.text_layer_height_mm, height, heading)
                         .on_hover_text(format!("{height:.0} mm high"));
-                    }
-                });
-                ui.horizontal(|ui| {
-                    if ui
-                        .add_enabled(
-                            !app.ui_state.text_layer_input.trim().is_empty(),
-                            egui::Button::new("Add to Stock"),
-                        )
-                        .clicked()
-                    {
-                        add_text = true;
-                    }
-                    if ui.button("Cancel").clicked() {
-                        cancel = true;
-                    }
-                });
+                }
             });
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(
+                        !app.ui_state.text_layer_input.trim().is_empty(),
+                        egui::Button::new(if editing_index.is_some() {
+                            "Save Changes"
+                        } else {
+                            "Add to Stock"
+                        }),
+                    )
+                    .clicked()
+                {
+                    save_text = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    cancel = true;
+                }
+            });
+        });
         app.ui_state.show_text_dialog = open && !cancel;
-        if add_text {
+        if cancel || !open {
+            app.ui_state.editing_text_layer = None;
+        }
+        if save_text {
             let text = app.ui_state.text_layer_input.trim().to_owned();
-            let setup = &app.project.setup;
             let height = app.ui_state.text_layer_height_mm;
-            let cell = height / 7.0;
-            let width = text.chars().count().saturating_sub(1) as f64 * cell * 6.0
-                + text.chars().count() as f64 * cell;
-            let origin = [
-                setup.stock_origin_mm[0] + (setup.stock_size_mm[0] - width) * 0.5,
-                setup.stock_origin_mm[1] + (setup.stock_size_mm[1] - height) * 0.5,
-            ];
-            let mut geometry = crate::workspace::object::Geometry::default();
-            geometry.add_text(&text, origin, height);
-            app.project
-                .layers
-                .push(Layer::new_text(format!("Text: {text}"), geometry));
-            let index = app.project.layers.len() - 1;
-            app.ui_state.selected_layer = Some(index);
-            app.ui_state.placing_text_layer = Some(index);
-            app.ui_state.text_placement_offset = [0.0; 2];
+            if let Some(index) = editing_index.filter(|&index| index < app.project.layers.len()) {
+                let layer = &mut app.project.layers[index];
+                let center = layer
+                    .geometry
+                    .bounds()
+                    .map(|(min, max)| [(min[0] + max[0]) * 0.5, (min[1] + max[1]) * 0.5])
+                    .unwrap_or([0.0, 0.0]);
+                let rotation = layer
+                    .text_data
+                    .as_ref()
+                    .map_or(0.0, |data| data.rotation_degrees);
+                layer.geometry = make_text_geometry(&text, height, center, rotation);
+                layer.name = format!("Text: {text}");
+                layer.text_data = Some(crate::workspace::layer::TextLayerData {
+                    content: text,
+                    height_mm: height,
+                    rotation_degrees: rotation,
+                });
+                app.ui_state.editing_text_layer = None;
+            } else {
+                let setup = &app.project.setup;
+                let cell = height / 7.0;
+                let width = text.chars().count().saturating_sub(1) as f64 * cell * 6.0
+                    + text.chars().count() as f64 * cell;
+                let origin = [
+                    setup.stock_origin_mm[0] + (setup.stock_size_mm[0] - width) * 0.5,
+                    setup.stock_origin_mm[1] + (setup.stock_size_mm[1] - height) * 0.5,
+                ];
+                let mut geometry = crate::workspace::object::Geometry::default();
+                geometry.add_text(&text, origin, height);
+                let mut layer = Layer::new_text(format!("Text: {text}"), geometry);
+                layer.text_data = Some(crate::workspace::layer::TextLayerData {
+                    content: text,
+                    height_mm: height,
+                    rotation_degrees: 0.0,
+                });
+                app.project.layers.push(layer);
+                let index = app.project.layers.len() - 1;
+                app.ui_state.selected_layer = Some(index);
+                app.ui_state.placing_text_layer = Some(index);
+                app.ui_state.text_placement_offset = [0.0; 2];
+            }
             app.ui_state.text_layer_input.clear();
             app.ui_state.show_text_dialog = false;
             app.ui_state.project_dirty = true;
             app.scene_sig.clear();
         }
     }
+
+    if app.ui_state.show_drawing_dialog {
+        let mut open = true;
+        let mut place = false;
+        let mut cancel = false;
+        egui::Window::new("Draw Design")
+            .id(egui::Id::new("draw_design_dialog"))
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label("Sketch your design, then place it in the viewport.");
+                ui.horizontal(|ui| {
+                    ui.label("Width (mm)");
+                    ui.add(
+                        egui::DragValue::new(&mut app.ui_state.drawing_width_mm).range(1.0..=500.0),
+                    );
+                    ui.label("Height (mm)");
+                    ui.add(
+                        egui::DragValue::new(&mut app.ui_state.drawing_height_mm)
+                            .range(1.0..=500.0),
+                    );
+                });
+
+                let (canvas, response) =
+                    ui.allocate_exact_size(egui::vec2(420.0, 260.0), egui::Sense::drag());
+                let painter = ui.painter_at(canvas);
+                painter.rect_filled(canvas, 4.0, egui::Color32::from_rgb(25, 29, 39));
+                painter.rect_stroke(
+                    canvas,
+                    4.0,
+                    egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(75, 87, 110)),
+                    egui::StrokeKind::Inside,
+                );
+                let pointer = response.interact_pointer_pos();
+                if response.drag_started() {
+                    app.ui_state.drawing_strokes.push(Vec::new());
+                }
+                if response.dragged() {
+                    if let Some(pointer) = pointer {
+                        let normalized = [
+                            ((pointer.x - canvas.left()) / canvas.width()).clamp(0.0, 1.0),
+                            ((pointer.y - canvas.top()) / canvas.height()).clamp(0.0, 1.0),
+                        ];
+                        if let Some(stroke) = app.ui_state.drawing_strokes.last_mut() {
+                            if stroke.last().is_none_or(|last| {
+                                (last[0] - normalized[0]).hypot(last[1] - normalized[1]) > 0.002
+                            }) {
+                                stroke.push(normalized);
+                            }
+                        }
+                    }
+                }
+                for stroke in &app.ui_state.drawing_strokes {
+                    for pair in stroke.windows(2) {
+                        let point = |p: [f32; 2]| {
+                            egui::pos2(
+                                canvas.left() + p[0] * canvas.width(),
+                                canvas.top() + p[1] * canvas.height(),
+                            )
+                        };
+                        painter.line_segment(
+                            [point(pair[0]), point(pair[1])],
+                            egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(90, 195, 245)),
+                        );
+                    }
+                }
+                ui.horizontal(|ui| {
+                    if ui.button("Undo stroke").clicked() {
+                        app.ui_state.drawing_strokes.pop();
+                    }
+                    if ui.button("Clear").clicked() {
+                        app.ui_state.drawing_strokes.clear();
+                    }
+                    ui.add_space(12.0);
+                    if ui
+                        .add_enabled(
+                            app.ui_state
+                                .drawing_strokes
+                                .iter()
+                                .any(|stroke| stroke.len() > 1),
+                            egui::Button::new("Place in Viewport"),
+                        )
+                        .clicked()
+                    {
+                        place = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        app.ui_state.show_drawing_dialog = open && !place && !cancel;
+        if place {
+            let width = app.ui_state.drawing_width_mm.max(1.0);
+            let height = app.ui_state.drawing_height_mm.max(1.0);
+            let mut geometry = crate::workspace::object::Geometry::default();
+            for stroke in &app.ui_state.drawing_strokes {
+                for pair in stroke.windows(2) {
+                    for point in pair {
+                        geometry
+                            .lines
+                            .push([(point[0] - 0.5) * width, (0.5 - point[1]) * height]);
+                    }
+                }
+            }
+            let mut layer = Layer::new_drawing("Hand drawn design".into(), geometry);
+            layer.color = crate::workspace::layer::palette_color(
+                &LayerKind::Drawing,
+                app.project.layers.len(),
+            );
+            app.project.layers.push(layer);
+            let index = app.project.layers.len() - 1;
+            app.ui_state.selected_layer = Some(index);
+            app.ui_state.placing_text_layer = Some(index);
+            app.ui_state.text_placement_offset = [0.0; 2];
+            app.ui_state.project_dirty = true;
+            app.ui_state.status_message = "Move design and double-click to place it".into();
+            app.scene_sig.clear();
+        }
+    }
+}
+
+fn make_text_geometry(
+    text: &str,
+    height_mm: f64,
+    center: [f32; 2],
+    rotation_degrees: f64,
+) -> crate::workspace::object::Geometry {
+    let cell = height_mm / 7.0;
+    let width = text
+        .chars()
+        .map(|character| if character.is_whitespace() { 4.0 } else { 6.0 })
+        .sum::<f64>()
+        * cell;
+    let origin = [
+        center[0] as f64 - width * 0.5,
+        center[1] as f64 - height_mm * 0.5,
+    ];
+    let mut geometry = crate::workspace::object::Geometry::default();
+    geometry.add_text(text, origin, height_mm);
+
+    let angle = rotation_degrees.to_radians() as f32;
+    let (sin, cos) = angle.sin_cos();
+    for point in geometry
+        .lines
+        .iter_mut()
+        .chain(geometry.triangles.iter_mut())
+    {
+        let x = point[0] - center[0];
+        let y = point[1] - center[1];
+        point[0] = center[0] + x * cos - y * sin;
+        point[1] = center[1] + x * sin + y * cos;
+    }
+    geometry
 }
 
 fn section_header(ui: &mut egui::Ui, title: &str, color: egui::Color32) {

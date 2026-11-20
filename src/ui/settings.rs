@@ -44,6 +44,29 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                 app.ui_state.display_units.label()
             ));
             ui.separator();
+            ui.heading("Stock appearance");
+            ui.label("Material used by the Render view");
+            egui::ComboBox::from_id_salt("stock_render_material")
+                .selected_text(app.project.stock_material.label())
+                .show_ui(ui, |ui| {
+                    for material in [
+                        crate::renderer::pipeline::StockMaterial::Wood,
+                        crate::renderer::pipeline::StockMaterial::Aluminum,
+                        crate::renderer::pipeline::StockMaterial::Steel,
+                    ] {
+                        if ui
+                            .selectable_value(
+                                &mut app.project.stock_material,
+                                material,
+                                material.label(),
+                            )
+                            .changed()
+                        {
+                            app.ui_state.project_dirty = true;
+                        }
+                    }
+                });
+            ui.separator();
             ui.heading("Appearance");
             ui.label("Theme");
             ui.horizontal(|ui| {

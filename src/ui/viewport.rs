@@ -27,6 +27,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
             // preview mesh while a right-button drag is active.
             let orbit_preview = handle_camera_input(ui, app, rect);
             sync_scene(app, orbit_preview);
+
             if app.ui_state.face_selection_mode {
                 ui.painter_at(rect).text(
                     egui::pos2(rect.center().x, rect.top() + 12.0),
@@ -42,6 +43,18 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                 app.ui_state.request_fit = false;
                 fit_to_geometry(app, rect.size());
             }
+
+            // Keep viewport decorations and the simulated cutter above rendered stock.
+            let callback = egui_wgpu::Callback::new_paint_callback(
+                rect,
+                ViewportCallback {
+                    camera: app.camera.clone(),
+                    show_grid: app.ui_state.show_grid && !app.ui_state.show_3d_view,
+                    viewport_size: [rect.width(), rect.height()],
+                    scene: app.scene.clone(),
+                },
+            );
+            ui.painter().add(callback);
 
             // Overlay coordinate display (top-left of viewport)
             overlay_info(ui, app, rect);
@@ -110,17 +123,6 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                 );
             }
 
-            // Paint the wgpu viewport via egui_wgpu::Callback
-            let callback = egui_wgpu::Callback::new_paint_callback(
-                rect,
-                ViewportCallback {
-                    camera: app.camera.clone(),
-                    show_grid: app.ui_state.show_grid && !app.ui_state.show_3d_view,
-                    viewport_size: [rect.width(), rect.height()],
-                    scene: app.scene.clone(),
-                },
-            );
-            ui.painter().add(callback);
             show_text_placement_outline(ui, app, rect);
             show_text_placement_prompt(ctx, app, rect);
             show_simulation_dro(ctx, ui, app, rect);
@@ -208,8 +210,8 @@ fn show_simulation_controls(ctx: &egui::Context, app: &mut TekkCamApp) {
 fn show_stock_render_controls(ctx: &egui::Context, app: &mut TekkCamApp, viewport: egui::Rect) {
     egui::Area::new(egui::Id::new("stock_render_controls"))
         .order(egui::Order::Foreground)
-        .fixed_pos(egui::pos2(viewport.right() - 12.0, viewport.top() + 12.0))
-        .pivot(egui::Align2::RIGHT_TOP)
+        .fixed_pos(egui::pos2(viewport.left() + 12.0, viewport.bottom() - 12.0))
+        .pivot(egui::Align2::LEFT_BOTTOM)
         .show(ctx, |ui| {
             egui::Frame::new()
                 .fill(egui::Color32::from_rgba_premultiplied(18, 22, 30, 225))
@@ -221,28 +223,35 @@ fn show_stock_render_controls(ctx: &egui::Context, app: &mut TekkCamApp, viewpor
                 .inner_margin(egui::Margin::symmetric(7, 5))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        let response = ui
-                            .toggle_value(&mut app.ui_state.render_stock, "Render")
-                            .on_hover_text("Render the stock as a solid material");
-                        if response.changed() && app.ui_state.render_stock {
-                            app.ui_state.show_3d_view = true;
+                        if ui
+                            .selectable_label(!app.ui_state.show_3d_view, "2D")
+                            .clicked()
+                        {
+                            app.ui_state.show_3d_view = false;
+                            app.ui_state.render_stock = false;
+                            app.ui_state.request_fit = true;
                         }
-                        egui::ComboBox::from_id_salt("stock_render_material")
-                            .selected_text(app.ui_state.stock_material.label())
-                            .width(82.0)
-                            .show_ui(ui, |ui| {
-                                for material in [
-                                    crate::renderer::pipeline::StockMaterial::Wood,
-                                    crate::renderer::pipeline::StockMaterial::Aluminum,
-                                    crate::renderer::pipeline::StockMaterial::Steel,
-                                ] {
-                                    ui.selectable_value(
-                                        &mut app.ui_state.stock_material,
-                                        material,
-                                        material.label(),
-                                    );
-                                }
-                            });
+                        if ui
+                            .selectable_label(
+                                app.ui_state.show_3d_view && !app.ui_state.render_stock,
+                                "3D",
+                            )
+                            .clicked()
+                        {
+                            app.ui_state.show_3d_view = true;
+                            app.ui_state.render_stock = false;
+                            app.ui_state.show_stock_removal = false;
+                            app.ui_state.model_orbit = [0.0; 2];
+                            app.ui_state.request_fit = true;
+                        }
+                        if ui
+                            .selectable_label(app.ui_state.render_stock, "Render")
+                            .clicked()
+                        {
+                            app.ui_state.show_3d_view = true;
+                            app.ui_state.render_stock = true;
+                            app.ui_state.show_stock_removal = true;
+                        }
                     });
                 });
         });
@@ -458,8 +467,8 @@ fn show_view_cube(ui: &mut egui::Ui, app: &mut TekkCamApp, viewport: egui::Rect)
             }) {
                 let flat_pitch = -0.565;
                 app.ui_state.model_orbit = match *label {
-                    "Top" => [0.0, -2.135],
-                    "Bottom" => [0.0, 0.905],
+                    "Top" => [0.0, 0.905],
+                    "Bottom" => [0.0, -2.135],
                     "Front" => [-std::f32::consts::FRAC_PI_4, flat_pitch],
                     "Right" => [std::f32::consts::FRAC_PI_4, flat_pitch],
                     "Back" => [3.0 * std::f32::consts::FRAC_PI_4, flat_pitch],
@@ -795,7 +804,19 @@ fn sync_scene(app: &mut TekkCamApp, orbit_preview: bool) {
     sig.push((u64::MAX, app.ui_state.show_3d_view, 0));
     sig.push((u64::MAX - 21, app.ui_state.show_stock_removal, 0));
     sig.push((u64::MAX - 22, app.ui_state.render_stock, 0));
-    sig.push((u64::MAX - 23, true, app.ui_state.stock_material as u64));
+    sig.push((u64::MAX - 23, true, app.project.stock_material as u64));
+    if !app.ui_state.simulation_moves.is_empty() {
+        sig.push((
+            u64::MAX - 24,
+            true,
+            app.ui_state.simulator.move_index as u64,
+        ));
+        sig.push((
+            u64::MAX - 25,
+            true,
+            app.ui_state.simulator.fraction.to_bits(),
+        ));
+    }
     for (index, value) in app
         .project
         .setup
@@ -855,6 +876,12 @@ fn sync_scene(app: &mut TekkCamApp, orbit_preview: bool) {
             .filter(|operation| operation.manual_face_selection)
             .map(|operation| operation.source_face_ids.as_slice())
             .unwrap_or(&[]);
+        let simulation = (!app.ui_state.simulation_moves.is_empty()).then_some(
+            crate::renderer::pipeline::SimulationProgress {
+                moves: &app.ui_state.simulation_moves,
+                state: &app.ui_state.simulator,
+            },
+        );
         app.scene = Arc::new(Scene::build(
             &app.project.layers,
             &models,
@@ -868,7 +895,8 @@ fn sync_scene(app: &mut TekkCamApp, orbit_preview: bool) {
             &app.project.setup,
             app.ui_state.show_stock_removal,
             app.ui_state.render_stock,
-            app.ui_state.stock_material,
+            app.project.stock_material,
+            simulation,
         ));
         app.scene_sig = sig;
     }
@@ -1026,19 +1054,25 @@ fn handle_camera_input(ui: &mut egui::Ui, app: &mut TekkCamApp, rect: egui::Rect
             if response.double_clicked() {
                 app.ui_state.placing_text_layer = None;
                 app.ui_state.project_dirty = true;
-                app.ui_state.status_message = "Text placed".into();
+                app.ui_state.status_message = "Design placed".into();
                 text_double_click = true;
             }
         } else if response.double_clicked() {
             if let Some(pointer_pos) = response.interact_pointer_pos() {
                 let cursor = screen_to_text_world(app, pointer_pos, rect);
-                if let Some(index) = text_layer_at_world(app, cursor) {
+                if let Some(index) = movable_layer_at_world(app, cursor) {
                     app.ui_state.selected_layer = Some(index);
                     app.ui_state.placing_text_layer = Some(index);
                     app.ui_state.text_placement_offset = layer_geometry_center(app, index)
                         .map(|center| [cursor.x as f64 - center[0], cursor.y as f64 - center[1]])
                         .unwrap_or([0.0; 2]);
-                    app.ui_state.status_message = "Move text and double-click to place it".into();
+                    app.ui_state.status_message = if app.project.layers[index].kind
+                        == crate::workspace::layer::LayerKind::Drawing
+                    {
+                        "Move design and double-click to place it".into()
+                    } else {
+                        "Move text and double-click to place it".into()
+                    };
                     text_double_click = true;
                 }
             }
@@ -1145,7 +1179,7 @@ fn text_world_to_screen(app: &TekkCamApp, point: [f32; 2], viewport: egui::Rect)
     }
 }
 
-fn text_layer_at_world(app: &TekkCamApp, point: glam::Vec2) -> Option<usize> {
+fn movable_layer_at_world(app: &TekkCamApp, point: glam::Vec2) -> Option<usize> {
     let tolerance = 8.0 / app.camera.zoom.max(0.05);
     app.project
         .layers
@@ -1153,7 +1187,13 @@ fn text_layer_at_world(app: &TekkCamApp, point: glam::Vec2) -> Option<usize> {
         .enumerate()
         .rev()
         .find_map(|(index, layer)| {
-            if !layer.visible || layer.kind != crate::workspace::layer::LayerKind::Text {
+            if !layer.visible
+                || !matches!(
+                    layer.kind,
+                    crate::workspace::layer::LayerKind::Text
+                        | crate::workspace::layer::LayerKind::Drawing
+                )
+            {
                 return None;
             }
             let (min, max) = layer.geometry.bounds()?;
@@ -1207,6 +1247,7 @@ fn text_resize_state_at_pointer(
         original_geometry: layer.geometry.clone(),
         anchor: [min[0], max[1]],
         initial_handle: handle_world,
+        original_height_mm: layer.text_data.as_ref().map(|data| data.height_mm),
     })
 }
 
@@ -1230,6 +1271,10 @@ fn text_rotate_state_at_pointer(
         original_geometry: layer.geometry.clone(),
         center,
         initial_angle: (cursor.y - center[1]).atan2(cursor.x - center[0]),
+        initial_rotation_degrees: layer
+            .text_data
+            .as_ref()
+            .map_or(0.0, |data| data.rotation_degrees),
     })
 }
 
@@ -1237,17 +1282,21 @@ fn rotate_text_layer(app: &mut TekkCamApp, rotate: &crate::app::TextRotateState,
     let angle =
         (cursor[1] - rotate.center[1]).atan2(cursor[0] - rotate.center[0]) - rotate.initial_angle;
     let (sin, cos) = angle.sin_cos();
-    let geometry = &mut app.project.layers[rotate.layer_index].geometry;
-    *geometry = rotate.original_geometry.clone();
-    for point in geometry
+    let layer = &mut app.project.layers[rotate.layer_index];
+    layer.geometry = rotate.original_geometry.clone();
+    for point in layer
+        .geometry
         .lines
         .iter_mut()
-        .chain(geometry.triangles.iter_mut())
+        .chain(layer.geometry.triangles.iter_mut())
     {
         let x = point[0] - rotate.center[0];
         let y = point[1] - rotate.center[1];
         point[0] = rotate.center[0] + x * cos - y * sin;
         point[1] = rotate.center[1] + x * sin + y * cos;
+    }
+    if let Some(data) = &mut layer.text_data {
+        data.rotation_degrees = rotate.initial_rotation_degrees + angle.to_degrees() as f64;
     }
     app.scene_sig.clear();
 }
@@ -1263,15 +1312,19 @@ fn resize_text_layer(app: &mut TekkCamApp, resize: &crate::app::TextResizeState,
         return;
     }
     let scale = (current[0].hypot(current[1]) / initial_length).clamp(0.15, 20.0);
-    let geometry = &mut app.project.layers[resize.layer_index].geometry;
-    *geometry = resize.original_geometry.clone();
-    for point in geometry
+    let layer = &mut app.project.layers[resize.layer_index];
+    layer.geometry = resize.original_geometry.clone();
+    for point in layer
+        .geometry
         .lines
         .iter_mut()
-        .chain(geometry.triangles.iter_mut())
+        .chain(layer.geometry.triangles.iter_mut())
     {
         point[0] = resize.anchor[0] + (point[0] - resize.anchor[0]) * scale;
         point[1] = resize.anchor[1] + (point[1] - resize.anchor[1]) * scale;
+    }
+    if let (Some(data), Some(original_height)) = (&mut layer.text_data, resize.original_height_mm) {
+        data.height_mm = original_height * scale as f64;
     }
     app.scene_sig.clear();
 }
@@ -1280,7 +1333,7 @@ fn show_text_placement_prompt(ctx: &egui::Context, app: &TekkCamApp, viewport: e
     if app.ui_state.placing_text_layer.is_none() {
         return;
     }
-    let prompt = "Move with cursor · Double-click to place";
+    let prompt = "Move design with cursor · Double-click to place";
     egui::Area::new(egui::Id::new("text_placement_prompt"))
         .order(egui::Order::Foreground)
         .fixed_pos(egui::pos2(viewport.center().x, viewport.bottom() - 16.0))
@@ -1380,6 +1433,10 @@ fn show_text_placement_outline(ui: &egui::Ui, app: &mut TekkCamApp, viewport: eg
                                     center,
                                     initial_angle: (cursor.y - center[1])
                                         .atan2(cursor.x - center[0]),
+                                    initial_rotation_degrees: layer
+                                        .text_data
+                                        .as_ref()
+                                        .map_or(0.0, |data| data.rotation_degrees),
                                 });
                             }
                         }

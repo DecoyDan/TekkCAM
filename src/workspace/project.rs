@@ -18,6 +18,8 @@ pub struct Project {
     #[serde(default)]
     pub setup: super::setup::MachiningSetup,
     #[serde(default)]
+    pub stock_material: crate::renderer::pipeline::StockMaterial,
+    #[serde(default)]
     pub probing: super::probing::ProbeSettings,
     #[serde(default)]
     pub surface_map: Option<super::probing::SurfaceMap>,

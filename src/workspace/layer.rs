@@ -12,6 +12,7 @@ pub enum LayerKind {
     Gcode,
     Placeholder,
     Text,
+    Drawing,
 }
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -39,6 +40,16 @@ pub struct Layer {
     /// Parsed, tessellated geometry (mm, Y up)
     #[serde(default)]
     pub geometry: Geometry,
+    #[serde(default)]
+    pub text_data: Option<TextLayerData>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TextLayerData {
+    pub content: String,
+    pub height_mm: f64,
+    #[serde(default)]
+    pub rotation_degrees: f64,
 }
 
 impl Layer {
@@ -51,6 +62,20 @@ impl Layer {
             file_path: None,
             color: [0.95, 0.75, 0.25, 1.0],
             geometry,
+            text_data: None,
+        }
+    }
+
+    pub fn new_drawing(name: String, geometry: Geometry) -> Self {
+        Self {
+            id: next_id(),
+            name,
+            kind: LayerKind::Drawing,
+            visible: true,
+            file_path: None,
+            color: [0.35, 0.82, 0.95, 1.0],
+            geometry,
+            text_data: None,
         }
     }
     /// Assign a process-unique id after deserializing a project.
@@ -67,6 +92,7 @@ impl Layer {
             file_path: None,
             color: default_color(),
             geometry: Geometry::default(),
+            text_data: None,
         }
     }
 
@@ -85,6 +111,7 @@ impl Layer {
             file_path: Some(path.to_string()),
             color: default_color(),
             geometry: Geometry::default(),
+            text_data: None,
         }
     }
 }
@@ -101,6 +128,7 @@ pub fn palette_color(kind: &LayerKind, index: usize) -> [f32; 4] {
         LayerKind::Drill => [0.95, 0.95, 0.35, 1.0],
         LayerKind::Dxf => [0.40, 0.85, 0.95, 1.0],
         LayerKind::Svg => [0.95, 0.60, 0.30, 1.0],
+        LayerKind::Drawing => [0.35, 0.82, 0.95, 1.0],
         _ => COPPER[index % COPPER.len()],
     }
 }
