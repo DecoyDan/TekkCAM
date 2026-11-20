@@ -21,6 +21,8 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                 return;
             }
 
+            show_stock_render_controls(ctx, app, rect);
+
             // Apply orbit input first so the scene builder can use its bounded
             // preview mesh while a right-button drag is active.
             let orbit_preview = handle_camera_input(ui, app, rect);
@@ -198,6 +200,49 @@ fn show_simulation_controls(ctx: &egui::Context, app: &mut TekkCamApp) {
                                 format!("{speed}×"),
                             );
                         }
+                    });
+                });
+        });
+}
+
+fn show_stock_render_controls(ctx: &egui::Context, app: &mut TekkCamApp, viewport: egui::Rect) {
+    egui::Area::new(egui::Id::new("stock_render_controls"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(egui::pos2(viewport.right() - 12.0, viewport.top() + 12.0))
+        .pivot(egui::Align2::RIGHT_TOP)
+        .show(ctx, |ui| {
+            egui::Frame::new()
+                .fill(egui::Color32::from_rgba_premultiplied(18, 22, 30, 225))
+                .stroke(egui::Stroke::new(
+                    1.0_f32,
+                    egui::Color32::from_rgb(65, 83, 108),
+                ))
+                .corner_radius(egui::CornerRadius::same(6))
+                .inner_margin(egui::Margin::symmetric(7, 5))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let response = ui
+                            .toggle_value(&mut app.ui_state.render_stock, "Render")
+                            .on_hover_text("Render the stock as a solid material");
+                        if response.changed() && app.ui_state.render_stock {
+                            app.ui_state.show_3d_view = true;
+                        }
+                        egui::ComboBox::from_id_salt("stock_render_material")
+                            .selected_text(app.ui_state.stock_material.label())
+                            .width(82.0)
+                            .show_ui(ui, |ui| {
+                                for material in [
+                                    crate::renderer::pipeline::StockMaterial::Wood,
+                                    crate::renderer::pipeline::StockMaterial::Aluminum,
+                                    crate::renderer::pipeline::StockMaterial::Steel,
+                                ] {
+                                    ui.selectable_value(
+                                        &mut app.ui_state.stock_material,
+                                        material,
+                                        material.label(),
+                                    );
+                                }
+                            });
                     });
                 });
         });
@@ -749,6 +794,8 @@ fn sync_scene(app: &mut TekkCamApp, orbit_preview: bool) {
     }
     sig.push((u64::MAX, app.ui_state.show_3d_view, 0));
     sig.push((u64::MAX - 21, app.ui_state.show_stock_removal, 0));
+    sig.push((u64::MAX - 22, app.ui_state.render_stock, 0));
+    sig.push((u64::MAX - 23, true, app.ui_state.stock_material as u64));
     for (index, value) in app
         .project
         .setup
@@ -820,6 +867,8 @@ fn sync_scene(app: &mut TekkCamApp, orbit_preview: bool) {
             orbit_preview,
             &app.project.setup,
             app.ui_state.show_stock_removal,
+            app.ui_state.render_stock,
+            app.ui_state.stock_material,
         ));
         app.scene_sig = sig;
     }
@@ -907,18 +956,37 @@ fn handle_camera_input(ui: &mut egui::Ui, app: &mut TekkCamApp, rect: egui::Rect
         .ui_state
         .placing_text_layer
         .filter(|&index| app.project.layers.get(index).is_some());
-    if placing_text.is_none() && response.drag_started_by(egui::PointerButton::Primary) {
+    let primary_down = ui.input(|input| input.pointer.button_down(egui::PointerButton::Primary));
+    if primary_down || response.drag_started_by(egui::PointerButton::Primary) {
         if let (Some(index), Some(pointer)) = (
-            app.ui_state.selected_layer.filter(|&index| {
-                app.project.layers.get(index).is_some_and(|layer| {
-                    layer.visible && layer.kind == crate::workspace::layer::LayerKind::Text
-                })
-            }),
+            app.ui_state
+                .placing_text_layer
+                .or(app.ui_state.selected_layer)
+                .filter(|&index| {
+                    app.project.layers.get(index).is_some_and(|layer| {
+                        layer.visible && layer.kind == crate::workspace::layer::LayerKind::Text
+                    })
+                }),
             response.interact_pointer_pos(),
         ) {
-            if let Some(state) = text_resize_state_at_pointer(app, index, pointer, rect) {
+            if let Some(state) = text_rotate_state_at_pointer(app, index, pointer, rect) {
+                app.ui_state.text_rotate = Some(state);
+            } else if let Some(state) = text_resize_state_at_pointer(app, index, pointer, rect) {
                 app.ui_state.text_resize = Some(state);
             }
+        }
+    }
+    if let Some(rotate) = app.ui_state.text_rotate.clone() {
+        if response.dragged_by(egui::PointerButton::Primary) {
+            if let Some(pointer) = response.interact_pointer_pos() {
+                let cursor = screen_to_text_world(app, pointer, rect);
+                rotate_text_layer(app, &rotate, [cursor.x, cursor.y]);
+            }
+        }
+        if response.drag_stopped_by(egui::PointerButton::Primary) {
+            app.ui_state.text_rotate = None;
+            app.ui_state.project_dirty = true;
+            app.ui_state.status_message = "Text rotated".into();
         }
     }
     if let Some(resize) = app.ui_state.text_resize.clone() {
@@ -934,12 +1002,26 @@ fn handle_camera_input(ui: &mut egui::Ui, app: &mut TekkCamApp, rect: egui::Rect
             app.ui_state.status_message = "Text resized".into();
         }
     }
+    if app.ui_state.text_resize.is_some() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
+    } else if app.ui_state.text_rotate.is_some() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+    } else if let (Some(index), Some(pointer)) = (
+        app.ui_state.placing_text_layer,
+        ui.input(|input| input.pointer.hover_pos()),
+    ) {
+        if text_resize_state_at_pointer(app, index, pointer, rect).is_some() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
+        }
+    }
     let mut text_double_click = false;
     if !app.ui_state.face_selection_mode {
         if let Some(index) = placing_text {
-            if let Some(pointer_pos) = response.interact_pointer_pos() {
-                let cursor = screen_to_text_world(app, pointer_pos, rect);
-                move_text_layer_to_cursor(app, index, cursor);
+            if app.ui_state.text_rotate.is_none() && app.ui_state.text_resize.is_none() {
+                if let Some(pointer_pos) = response.interact_pointer_pos() {
+                    let cursor = screen_to_text_world(app, pointer_pos, rect);
+                    move_text_layer_to_cursor(app, index, cursor);
+                }
             }
             if response.double_clicked() {
                 app.ui_state.placing_text_layer = None;
@@ -1128,6 +1210,48 @@ fn text_resize_state_at_pointer(
     })
 }
 
+fn text_rotate_state_at_pointer(
+    app: &TekkCamApp,
+    index: usize,
+    pointer: egui::Pos2,
+    viewport: egui::Rect,
+) -> Option<crate::app::TextRotateState> {
+    let layer = app.project.layers.get(index)?;
+    let (min, max) = layer.geometry.bounds()?;
+    let handle = text_world_to_screen(app, [(min[0] + max[0]) * 0.5, max[1]], viewport)
+        + egui::vec2(0.0, -22.0);
+    if handle.distance(pointer) > 10.0 {
+        return None;
+    }
+    let center = [(min[0] + max[0]) * 0.5, (min[1] + max[1]) * 0.5];
+    let cursor = screen_to_text_world(app, pointer, viewport);
+    Some(crate::app::TextRotateState {
+        layer_index: index,
+        original_geometry: layer.geometry.clone(),
+        center,
+        initial_angle: (cursor.y - center[1]).atan2(cursor.x - center[0]),
+    })
+}
+
+fn rotate_text_layer(app: &mut TekkCamApp, rotate: &crate::app::TextRotateState, cursor: [f32; 2]) {
+    let angle =
+        (cursor[1] - rotate.center[1]).atan2(cursor[0] - rotate.center[0]) - rotate.initial_angle;
+    let (sin, cos) = angle.sin_cos();
+    let geometry = &mut app.project.layers[rotate.layer_index].geometry;
+    *geometry = rotate.original_geometry.clone();
+    for point in geometry
+        .lines
+        .iter_mut()
+        .chain(geometry.triangles.iter_mut())
+    {
+        let x = point[0] - rotate.center[0];
+        let y = point[1] - rotate.center[1];
+        point[0] = rotate.center[0] + x * cos - y * sin;
+        point[1] = rotate.center[1] + x * sin + y * cos;
+    }
+    app.scene_sig.clear();
+}
+
 fn resize_text_layer(app: &mut TekkCamApp, resize: &crate::app::TextResizeState, cursor: [f32; 2]) {
     let initial = [
         resize.initial_handle[0] - resize.anchor[0],
@@ -1156,7 +1280,7 @@ fn show_text_placement_prompt(ctx: &egui::Context, app: &TekkCamApp, viewport: e
     if app.ui_state.placing_text_layer.is_none() {
         return;
     }
-    let prompt = "Move text with the cursor · Double-click to place";
+    let prompt = "Move with cursor · Double-click to place";
     egui::Area::new(egui::Id::new("text_placement_prompt"))
         .order(egui::Order::Foreground)
         .fixed_pos(egui::pos2(viewport.center().x, viewport.bottom() - 16.0))
@@ -1176,14 +1300,8 @@ fn show_text_placement_prompt(ctx: &egui::Context, app: &TekkCamApp, viewport: e
         });
 }
 
-fn show_text_placement_outline(ui: &egui::Ui, app: &TekkCamApp, viewport: egui::Rect) {
-    let selected_text = app.ui_state.selected_layer.filter(|&index| {
-        app.project
-            .layers
-            .get(index)
-            .is_some_and(|layer| layer.kind == crate::workspace::layer::LayerKind::Text)
-    });
-    let Some(index) = app.ui_state.placing_text_layer.or(selected_text) else {
+fn show_text_placement_outline(ui: &egui::Ui, app: &mut TekkCamApp, viewport: egui::Rect) {
+    let Some(index) = app.ui_state.placing_text_layer else {
         return;
     };
     let Some((min, max)) = app
@@ -1223,7 +1341,7 @@ fn show_text_placement_outline(ui: &egui::Ui, app: &TekkCamApp, viewport: egui::
         egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(105, 165, 255)),
         egui::StrokeKind::Inside,
     );
-    if app.ui_state.placing_text_layer.is_none() {
+    if app.ui_state.placing_text_layer.is_some() {
         let handle = text_world_to_screen(app, [max[0], min[1]], viewport);
         let handle_rect = egui::Rect::from_center_size(handle, egui::vec2(8.0, 8.0));
         painter.rect_filled(handle_rect, 1.0, egui::Color32::WHITE);
@@ -1233,6 +1351,56 @@ fn show_text_placement_outline(ui: &egui::Ui, app: &TekkCamApp, viewport: egui::
             egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(55, 115, 215)),
             egui::StrokeKind::Inside,
         );
+        let button_pos = egui::pos2(bounds.center().x, bounds.top() - 14.0);
+        egui::Area::new(egui::Id::new("text_rotate_button"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(button_pos)
+            .pivot(egui::Align2::CENTER_CENTER)
+            .show(ui.ctx(), |ui| {
+                let response = ui
+                    .add_sized(
+                        egui::vec2(24.0, 24.0),
+                        egui::Button::new(egui::RichText::new("⟳").size(16.0))
+                            .sense(egui::Sense::click_and_drag()),
+                    )
+                    .on_hover_cursor(egui::CursorIcon::Grab)
+                    .on_hover_text("Drag to rotate text");
+                if response.dragged() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                }
+                if response.drag_started_by(egui::PointerButton::Primary) {
+                    if let Some(pointer) = response.interact_pointer_pos() {
+                        if let Some(layer) = app.project.layers.get(index) {
+                            if let Some((min, max)) = layer.geometry.bounds() {
+                                let center = [(min[0] + max[0]) * 0.5, (min[1] + max[1]) * 0.5];
+                                let cursor = screen_to_text_world(app, pointer, viewport);
+                                app.ui_state.text_rotate = Some(crate::app::TextRotateState {
+                                    layer_index: index,
+                                    original_geometry: layer.geometry.clone(),
+                                    center,
+                                    initial_angle: (cursor.y - center[1])
+                                        .atan2(cursor.x - center[0]),
+                                });
+                            }
+                        }
+                    }
+                }
+                if let (Some(rotate), Some(pointer)) = (
+                    app.ui_state.text_rotate.clone(),
+                    response.interact_pointer_pos(),
+                ) {
+                    if response.dragged_by(egui::PointerButton::Primary) {
+                        let cursor = screen_to_text_world(app, pointer, viewport);
+                        rotate_text_layer(app, &rotate, [cursor.x, cursor.y]);
+                    }
+                }
+                if response.drag_stopped_by(egui::PointerButton::Primary)
+                    && app.ui_state.text_rotate.is_some()
+                {
+                    app.ui_state.text_rotate = None;
+                    app.ui_state.project_dirty = true;
+                }
+            });
     }
 }
 

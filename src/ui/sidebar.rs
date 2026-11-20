@@ -147,6 +147,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
             if let Some(i) = toggle_vis {
                 app.project.layers[i].visible = !app.project.layers[i].visible;
                 app.ui_state.project_dirty = true;
+                app.scene_sig.clear();
             }
             if let Some(i) = select_layer {
                 app.ui_state.selected_layer = Some(i);
@@ -346,33 +347,6 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                 };
                 app.ui_state.project_dirty = true;
                 app.scene_sig.clear();
-            }
-
-            if let Some(index) = app
-                .ui_state
-                .selected_operation
-                .filter(|index| *index < app.project.operations.len())
-            {
-                ui.horizontal(|ui| {
-                    if ui
-                        .add_enabled(index > 0, egui::Button::new("Move up"))
-                        .clicked()
-                    {
-                        app.project.operations.swap(index, index - 1);
-                        app.ui_state.selected_operation = Some(index - 1);
-                        app.ui_state.project_dirty = true;
-                        app.scene_sig.clear();
-                    }
-                    if ui
-                        .add_enabled(index + 1 < op_count, egui::Button::new("Move down"))
-                        .clicked()
-                    {
-                        app.project.operations.swap(index, index + 1);
-                        app.ui_state.selected_operation = Some(index + 1);
-                        app.ui_state.project_dirty = true;
-                        app.scene_sig.clear();
-                    }
-                });
             }
 
             if op_count == 0 {

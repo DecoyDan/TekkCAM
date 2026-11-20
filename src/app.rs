@@ -314,12 +314,15 @@ pub struct UiState {
     pub placing_text_layer: Option<usize>,
     pub text_placement_offset: [f64; 2],
     pub text_resize: Option<TextResizeState>,
+    pub text_rotate: Option<TextRotateState>,
     pub console_log: Vec<String>,
     pub status_message: String,
     pub machine_connected: bool,
     pub show_grid: bool,
     pub show_3d_view: bool,
     pub show_stock_removal: bool,
+    pub render_stock: bool,
+    pub stock_material: crate::renderer::pipeline::StockMaterial,
     pub show_left_sidebar: bool,
     pub show_right_sidebar: bool,
     pub show_console: bool,
@@ -359,6 +362,14 @@ pub struct TextResizeState {
     pub original_geometry: crate::workspace::object::Geometry,
     pub anchor: [f32; 2],
     pub initial_handle: [f32; 2],
+}
+
+#[derive(Clone)]
+pub struct TextRotateState {
+    pub layer_index: usize,
+    pub original_geometry: crate::workspace::object::Geometry,
+    pub center: [f32; 2],
+    pub initial_angle: f32,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -414,6 +425,7 @@ impl Default for UiState {
             placing_text_layer: None,
             text_placement_offset: [0.0; 2],
             text_resize: None,
+            text_rotate: None,
             console_log: vec![
                 format!("TekkCAM v{} — ready.", env!("CARGO_PKG_VERSION")),
                 "Load a Gerber / DXF / SVG file to begin.".into(),
@@ -423,6 +435,8 @@ impl Default for UiState {
             show_grid: true,
             show_3d_view: false,
             show_stock_removal: false,
+            render_stock: false,
+            stock_material: crate::renderer::pipeline::StockMaterial::Wood,
             show_left_sidebar: true,
             show_right_sidebar: true,
             show_console: true,
@@ -959,22 +973,16 @@ impl TekkCamApp {
                 operation.source_face_ids = crate::cam::model_2d::automatic_profile_faces(model);
             }
         }
-        let geometry = self
-            .project
-            .layers
-            .iter()
-            .find(|layer| {
-                if let Some(id) = operation.source_layer_id {
-                    layer.id == id && !layer.geometry.is_empty()
-                } else {
-                    layer.visible && !layer.geometry.is_empty()
-                }
-            })
-            .map(|layer| layer.geometry.clone());
-        let text_layer = operation
-            .source_layer_id
-            .and_then(|id| self.project.layers.iter().find(|layer| layer.id == id))
+        let source_layer = self.project.layers.iter().find(|layer| {
+            if let Some(id) = operation.source_layer_id {
+                layer.id == id && !layer.geometry.is_empty()
+            } else {
+                layer.visible && !layer.geometry.is_empty()
+            }
+        });
+        let text_layer = source_layer
             .is_some_and(|layer| layer.kind == crate::workspace::layer::LayerKind::Text);
+        let geometry = source_layer.map(|layer| layer.geometry.clone());
         if !model_required && geometry.is_none() {
             self.ui_state
                 .console_log

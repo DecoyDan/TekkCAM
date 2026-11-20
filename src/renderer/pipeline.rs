@@ -22,6 +22,32 @@ pub struct Vertex {
     pub color: [f32; 4],
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StockMaterial {
+    #[default]
+    Wood,
+    Aluminum,
+    Steel,
+}
+
+impl StockMaterial {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Wood => "Wood",
+            Self::Aluminum => "Aluminum",
+            Self::Steel => "Steel",
+        }
+    }
+
+    fn color(self) -> [f32; 3] {
+        match self {
+            Self::Wood => [0.66, 0.36, 0.16],
+            Self::Aluminum => [0.58, 0.66, 0.72],
+            Self::Steel => [0.38, 0.44, 0.51],
+        }
+    }
+}
+
 /// CPU-side snapshot of everything drawn by the geometry pass.
 #[derive(Default)]
 pub struct Scene {
@@ -80,11 +106,16 @@ impl Scene {
         orbit_preview: bool,
         setup: &MachiningSetup,
         show_stock_removal: bool,
+        render_stock: bool,
+        stock_material: StockMaterial,
     ) -> Self {
         let mut scene = Scene {
             revision,
             ..Default::default()
         };
+        if view_3d && render_stock {
+            append_stock_solid(&mut scene, setup, stock_material, orbit);
+        }
         for l in layers.iter().filter(|l| l.visible) {
             let color = l.color;
             let layer_z = if view_3d && l.kind == crate::workspace::layer::LayerKind::Text {
@@ -297,6 +328,86 @@ impl Scene {
                     ),
                 })
             })
+    }
+}
+
+fn append_stock_solid(
+    scene: &mut Scene,
+    setup: &MachiningSetup,
+    material: StockMaterial,
+    orbit: [f32; 2],
+) {
+    let min = setup.stock_origin_mm;
+    let max = [
+        min[0] + setup.stock_size_mm[0],
+        min[1] + setup.stock_size_mm[1],
+        match setup.axis {
+            WorkAxis::ZUp => min[2] + setup.stock_size_mm[2],
+            WorkAxis::ZDown => min[2] - setup.stock_size_mm[2],
+        },
+    ];
+    let p = [
+        [min[0] as f32, min[1] as f32, min[2] as f32],
+        [max[0] as f32, min[1] as f32, min[2] as f32],
+        [max[0] as f32, max[1] as f32, min[2] as f32],
+        [min[0] as f32, max[1] as f32, min[2] as f32],
+        [min[0] as f32, min[1] as f32, max[2] as f32],
+        [max[0] as f32, min[1] as f32, max[2] as f32],
+        [max[0] as f32, max[1] as f32, max[2] as f32],
+        [min[0] as f32, max[1] as f32, max[2] as f32],
+    ];
+    let faces = [
+        [0, 2, 1],
+        [0, 3, 2], // bottom
+        [4, 5, 6],
+        [4, 6, 7], // top
+        [0, 1, 5],
+        [0, 5, 4], // front
+        [1, 2, 6],
+        [1, 6, 5], // right
+        [2, 3, 7],
+        [2, 7, 6], // back
+        [3, 0, 4],
+        [3, 4, 7], // left
+    ];
+    let base = material.color();
+    let mut triangles: Vec<_> = faces
+        .into_iter()
+        .map(|face| {
+            let points = [p[face[0]], p[face[1]], p[face[2]]];
+            let depth = points
+                .iter()
+                .map(|point| camera_point(*point, orbit)[2])
+                .sum::<f32>()
+                / 3.0;
+            (depth, points)
+        })
+        .collect();
+    triangles.sort_by(|a, b| a.0.total_cmp(&b.0));
+    for (_, points) in triangles {
+        append_shaded_triangle(scene, points, base, orbit);
+    }
+    if material == StockMaterial::Wood {
+        let top_z = match setup.axis {
+            WorkAxis::ZUp => max[2] as f32,
+            WorkAxis::ZDown => min[2] as f32,
+        };
+        let z = top_z
+            + if setup.axis == WorkAxis::ZUp {
+                0.0005
+            } else {
+                -0.0005
+            };
+        let grain = [0.38, 0.19, 0.08, 0.32];
+        for fraction in [0.24_f32, 0.43, 0.62, 0.81] {
+            let y = p[0][1] + (p[3][1] - p[0][1]) * fraction;
+            for x in [p[0][0], p[1][0]] {
+                scene.lines.push(Vertex {
+                    pos: project_point(x, y, z, true, orbit),
+                    color: grain,
+                });
+            }
+        }
     }
 }
 
