@@ -242,12 +242,7 @@ impl Scene {
         }
         for l in layers.iter().filter(|l| l.visible) {
             let color = l.color;
-            let layer_z = if view_3d
-                && matches!(
-                    l.kind,
-                    crate::workspace::layer::LayerKind::Text
-                        | crate::workspace::layer::LayerKind::Drawing
-                ) {
+            let layer_z = if view_3d {
                 (match setup.axis {
                     WorkAxis::ZUp => setup.stock_origin_mm[2] + setup.stock_size_mm[2],
                     WorkAxis::ZDown => setup.stock_origin_mm[2],

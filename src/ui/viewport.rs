@@ -1038,7 +1038,13 @@ fn handle_camera_input(ui: &mut egui::Ui, app: &mut TekkCamApp, rect: egui::Rect
         app.ui_state.placing_text_layer,
         ui.input(|input| input.pointer.hover_pos()),
     ) {
-        if text_resize_state_at_pointer(app, index, pointer, rect).is_some() {
+        if app
+            .project
+            .layers
+            .get(index)
+            .is_some_and(|layer| layer.kind == crate::workspace::layer::LayerKind::Text)
+            && text_resize_state_at_pointer(app, index, pointer, rect).is_some()
+        {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
         }
     }
@@ -1066,13 +1072,8 @@ fn handle_camera_input(ui: &mut egui::Ui, app: &mut TekkCamApp, rect: egui::Rect
                     app.ui_state.text_placement_offset = layer_geometry_center(app, index)
                         .map(|center| [cursor.x as f64 - center[0], cursor.y as f64 - center[1]])
                         .unwrap_or([0.0; 2]);
-                    app.ui_state.status_message = if app.project.layers[index].kind
-                        == crate::workspace::layer::LayerKind::Drawing
-                    {
-                        "Move design and double-click to place it".into()
-                    } else {
-                        "Move text and double-click to place it".into()
-                    };
+                    app.ui_state.status_message =
+                        "Move layer with cursor and double-click to place it".into();
                     text_double_click = true;
                 }
             }
@@ -1187,13 +1188,7 @@ fn movable_layer_at_world(app: &TekkCamApp, point: glam::Vec2) -> Option<usize> 
         .enumerate()
         .rev()
         .find_map(|(index, layer)| {
-            if !layer.visible
-                || !matches!(
-                    layer.kind,
-                    crate::workspace::layer::LayerKind::Text
-                        | crate::workspace::layer::LayerKind::Drawing
-                )
-            {
+            if !layer.visible || layer.kind == crate::workspace::layer::LayerKind::Placeholder {
                 return None;
             }
             let (min, max) = layer.geometry.bounds()?;
@@ -1394,7 +1389,12 @@ fn show_text_placement_outline(ui: &egui::Ui, app: &mut TekkCamApp, viewport: eg
         egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(105, 165, 255)),
         egui::StrokeKind::Inside,
     );
-    if app.ui_state.placing_text_layer.is_some() {
+    if app
+        .project
+        .layers
+        .get(index)
+        .is_some_and(|layer| layer.kind == crate::workspace::layer::LayerKind::Text)
+    {
         let handle = text_world_to_screen(app, [max[0], min[1]], viewport);
         let handle_rect = egui::Rect::from_center_size(handle, egui::vec2(8.0, 8.0));
         painter.rect_filled(handle_rect, 1.0, egui::Color32::WHITE);

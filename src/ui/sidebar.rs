@@ -1,6 +1,6 @@
 use crate::app::TekkCamApp;
 use crate::cam::operations::OperationKind;
-use crate::workspace::layer::{Layer, LayerKind};
+use crate::workspace::layer::{Layer, LayerKind, TextFontStyle};
 use eframe::egui;
 
 const ACCENT: egui::Color32 = egui::Color32::from_rgb(80, 140, 255);
@@ -50,12 +50,13 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                         [28.0, 28.0],
                         egui::Button::new(egui::RichText::new("tT").color(ACCENT)),
                     )
-                    .on_hover_text("Add text")
+                    .on_hover_text("Text")
                     .clicked()
                 {
                     app.ui_state.editing_text_layer = None;
                     app.ui_state.text_layer_input.clear();
                     app.ui_state.text_layer_height_mm = 5.0;
+                    app.ui_state.text_layer_font_style = TextFontStyle::default();
                     app.ui_state.show_text_dialog = true;
                 }
                 let pencil_button = ui
@@ -67,7 +68,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                                 .color(ACCENT),
                         ),
                     )
-                    .on_hover_text("Draw a design");
+                    .on_hover_text("Draw");
                 if pencil_button.clicked() {
                     app.ui_state.drawing_strokes.clear();
                     app.ui_state.show_drawing_dialog = true;
@@ -111,6 +112,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
             let mut toggle_vis: Option<usize> = None;
             let mut select_layer: Option<usize> = None;
             let mut delete_layer: Option<usize> = None;
+            let mut add_layer_operation: Option<(usize, crate::cam::operations::Operation)> = None;
 
             for (i, (is_selected, vis_icon, label, _vis)) in layer_display.iter().enumerate() {
                 let row_bg = if *is_selected {
@@ -156,6 +158,44 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                     })
                     .inner;
                 row_button_response.context_menu(|ui| {
+                    let kind = &app.project.layers[i].kind;
+                    match kind {
+                        LayerKind::Drill => {
+                            if ui.button("Add Drilling").clicked() {
+                                add_layer_operation =
+                                    Some((i, crate::cam::operations::Operation::drill()));
+                                ui.close_menu();
+                            }
+                        }
+                        LayerKind::Gerber
+                        | LayerKind::Dxf
+                        | LayerKind::Svg
+                        | LayerKind::Text
+                        | LayerKind::Drawing => {
+                            ui.menu_button("Add CAM operation", |ui| {
+                                for (label, operation) in [
+                                    (
+                                        "Isolation Routing",
+                                        crate::cam::operations::Operation::isolation(),
+                                    ),
+                                    (
+                                        "Pocket Milling",
+                                        crate::cam::operations::Operation::pocket(),
+                                    ),
+                                    ("Contour Cut", crate::cam::operations::Operation::contour()),
+                                ] {
+                                    if ui.button(label).clicked() {
+                                        add_layer_operation = Some((i, operation));
+                                        ui.close_menu();
+                                    }
+                                }
+                            });
+                        }
+                        LayerKind::Gcode | LayerKind::Placeholder => {}
+                    }
+                    if !matches!(kind, LayerKind::Gcode | LayerKind::Placeholder) {
+                        ui.separator();
+                    }
                     if ui.button("Delete layer").clicked() {
                         delete_layer = Some(i);
                         ui.close_menu();
@@ -164,6 +204,13 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
             }
 
             // Apply deferred mutations
+            if let Some((index, mut operation)) = add_layer_operation {
+                if let Some(layer) = app.project.layers.get(index) {
+                    app.ui_state.selected_layer = Some(index);
+                    operation.source_layer_id = Some(layer.id);
+                    app.add_operation(operation);
+                }
+            }
             if let Some(i) = toggle_vis {
                 app.project.layers[i].visible = !app.project.layers[i].visible;
                 app.ui_state.project_dirty = true;
@@ -196,6 +243,10 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                         .unwrap_or(5.0);
                     app.ui_state.text_layer_input = input;
                     app.ui_state.text_layer_height_mm = height;
+                    app.ui_state.text_layer_font_style = layer
+                        .text_data
+                        .as_ref()
+                        .map_or(TextFontStyle::default(), |data| data.font_style);
                     app.ui_state.editing_text_layer = Some(i);
                     app.ui_state.show_text_dialog = true;
                     app.ui_state.placing_text_layer = None;
@@ -246,6 +297,8 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                 let mut changed_model_visibility = None;
                 let mut select_model = None;
                 let mut delete_model = None;
+                let mut add_model_operation: Option<(usize, crate::cam::operations::Operation)> =
+                    None;
                 for (index, (selected, visible, label)) in model_display.iter().enumerate() {
                     let response = ui
                         .horizontal(|ui| {
@@ -269,11 +322,48 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                         })
                         .response;
                     response.context_menu(|ui| {
+                        ui.menu_button("Add CAM operation", |ui| {
+                            for (label, operation) in [
+                                (
+                                    "STEP Face Profile",
+                                    crate::cam::operations::Operation::model_profile_2d(),
+                                ),
+                                (
+                                    "3D Stock Roughing",
+                                    crate::cam::operations::Operation::roughing_3d(),
+                                ),
+                                (
+                                    "3D Raster Finish",
+                                    crate::cam::operations::Operation::finish_raster_3d(),
+                                ),
+                                (
+                                    "3D Contour-Parallel Finish",
+                                    crate::cam::operations::Operation::finish_contour_3d(),
+                                ),
+                                (
+                                    "3D Waterline Finish",
+                                    crate::cam::operations::Operation::finish_waterline_3d(),
+                                ),
+                            ] {
+                                if ui.button(label).clicked() {
+                                    add_model_operation = Some((index, operation));
+                                    ui.close_menu();
+                                }
+                            }
+                        });
+                        ui.separator();
                         if ui.button("Delete model").clicked() {
                             delete_model = Some(index);
                             ui.close_menu();
                         }
                     });
+                }
+                if let Some((index, operation)) = add_model_operation {
+                    app.ui_state.selected_model = Some(index);
+                    app.ui_state.show_3d_view = true;
+                    app.ui_state.request_fit = true;
+                    app.project.models[index].visible = true;
+                    app.add_operation(operation);
                 }
                 if let Some((index, visible)) = changed_model_visibility {
                     app.project.models[index].visible = visible;
@@ -403,11 +493,17 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
             }
 
             if op_count == 0 {
-                ui.add_space(8.0);
-                ui.label(
-                    egui::RichText::new("No operations yet.\nUse the toolbar to add one.")
-                        .size(11.0)
-                        .color(egui::Color32::from_rgb(100, 100, 120)),
+                let empty_state_height = (ui.available_height() - 40.0).max(36.0);
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), empty_state_height),
+                    egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                    |ui| {
+                        ui.label(
+                            egui::RichText::new("No operations yet.\nUse the toolbar to add one.")
+                                .size(11.0)
+                                .color(egui::Color32::from_rgb(100, 100, 120)),
+                        );
+                    },
                 );
             }
 
@@ -467,6 +563,26 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                         .on_hover_text(format!("{height:.0} mm high"));
                 }
             });
+            ui.label("Font style");
+            egui::ComboBox::from_id_salt("text_font_style")
+                .selected_text(match app.ui_state.text_layer_font_style {
+                    TextFontStyle::SingleLine => "Segmented",
+                    TextFontStyle::Stroke => "Single stroke",
+                    TextFontStyle::Bold => "Bold",
+                    TextFontStyle::Italic => "Italic",
+                    TextFontStyle::BoldItalic => "Bold italic",
+                })
+                .show_ui(ui, |ui| {
+                    for (style, label) in [
+                        (TextFontStyle::SingleLine, "Segmented"),
+                        (TextFontStyle::Stroke, "Single stroke"),
+                        (TextFontStyle::Bold, "Bold"),
+                        (TextFontStyle::Italic, "Italic"),
+                        (TextFontStyle::BoldItalic, "Bold italic"),
+                    ] {
+                        ui.selectable_value(&mut app.ui_state.text_layer_font_style, style, label);
+                    }
+                });
             ui.horizontal(|ui| {
                 if ui
                     .add_enabled(
@@ -493,6 +609,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
         if save_text {
             let text = app.ui_state.text_layer_input.trim().to_owned();
             let height = app.ui_state.text_layer_height_mm;
+            let font_style = app.ui_state.text_layer_font_style;
             if let Some(index) = editing_index.filter(|&index| index < app.project.layers.len()) {
                 let layer = &mut app.project.layers[index];
                 let center = layer
@@ -504,11 +621,12 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                     .text_data
                     .as_ref()
                     .map_or(0.0, |data| data.rotation_degrees);
-                layer.geometry = make_text_geometry(&text, height, center, rotation);
+                layer.geometry = make_text_geometry(&text, height, center, rotation, font_style);
                 layer.name = format!("Text: {text}");
                 layer.text_data = Some(crate::workspace::layer::TextLayerData {
                     content: text,
                     height_mm: height,
+                    font_style,
                     rotation_degrees: rotation,
                 });
                 app.ui_state.editing_text_layer = None;
@@ -522,11 +640,12 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                     setup.stock_origin_mm[1] + (setup.stock_size_mm[1] - height) * 0.5,
                 ];
                 let mut geometry = crate::workspace::object::Geometry::default();
-                geometry.add_text(&text, origin, height);
+                add_styled_text(&mut geometry, &text, origin, height, font_style);
                 let mut layer = Layer::new_text(format!("Text: {text}"), geometry);
                 layer.text_data = Some(crate::workspace::layer::TextLayerData {
                     content: text,
                     height_mm: height,
+                    font_style,
                     rotation_degrees: 0.0,
                 });
                 app.project.layers.push(layer);
@@ -669,6 +788,7 @@ fn make_text_geometry(
     height_mm: f64,
     center: [f32; 2],
     rotation_degrees: f64,
+    font_style: TextFontStyle,
 ) -> crate::workspace::object::Geometry {
     let cell = height_mm / 7.0;
     let width = text
@@ -681,7 +801,7 @@ fn make_text_geometry(
         center[1] as f64 - height_mm * 0.5,
     ];
     let mut geometry = crate::workspace::object::Geometry::default();
-    geometry.add_text(text, origin, height_mm);
+    add_styled_text(&mut geometry, text, origin, height_mm, font_style);
 
     let angle = rotation_degrees.to_radians() as f32;
     let (sin, cos) = angle.sin_cos();
@@ -696,6 +816,53 @@ fn make_text_geometry(
         point[1] = center[1] + x * sin + y * cos;
     }
     geometry
+}
+
+fn add_styled_text(
+    geometry: &mut crate::workspace::object::Geometry,
+    text: &str,
+    origin: [f64; 2],
+    height_mm: f64,
+    font_style: TextFontStyle,
+) {
+    if font_style == TextFontStyle::Stroke {
+        geometry.add_stroke_text(text, origin, height_mm);
+    } else {
+        geometry.add_text(text, origin, height_mm);
+        apply_text_font_style(geometry, height_mm, font_style);
+    }
+}
+
+fn apply_text_font_style(
+    geometry: &mut crate::workspace::object::Geometry,
+    height_mm: f64,
+    font_style: TextFontStyle,
+) {
+    let cell = (height_mm / 7.0) as f32;
+    if matches!(font_style, TextFontStyle::Bold | TextFontStyle::BoldItalic) {
+        let offset = cell * 0.14;
+        let original = geometry.lines.clone();
+        for point in original {
+            geometry.lines.push([point[0], point[1] + offset]);
+            geometry.lines.push([point[0], point[1] - offset]);
+        }
+    }
+    if matches!(
+        font_style,
+        TextFontStyle::Italic | TextFontStyle::BoldItalic
+    ) {
+        let Some((min, max)) = geometry.bounds() else {
+            return;
+        };
+        let center_y = (min[1] + max[1]) * 0.5;
+        for point in geometry
+            .lines
+            .iter_mut()
+            .chain(geometry.triangles.iter_mut())
+        {
+            point[0] += (point[1] - center_y) * 0.22;
+        }
+    }
 }
 
 fn section_header(ui: &mut egui::Ui, title: &str, color: egui::Color32) {

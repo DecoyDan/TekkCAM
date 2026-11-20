@@ -49,7 +49,21 @@ pub struct TextLayerData {
     pub content: String,
     pub height_mm: f64,
     #[serde(default)]
+    pub font_style: TextFontStyle,
+    #[serde(default)]
     pub rotation_degrees: f64,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum TextFontStyle {
+    #[default]
+    /// Original bitmap lettering made from horizontal runs.
+    SingleLine,
+    /// Connected centerline strokes intended for single-pass engraving.
+    Stroke,
+    Bold,
+    Italic,
+    BoldItalic,
 }
 
 impl Layer {

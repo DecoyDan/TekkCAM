@@ -48,6 +48,18 @@ fn translate_toolpath_z(path: &mut crate::cam::toolpath::Toolpath, offset: f64) 
     }
 }
 
+fn uses_stock_surface(kind: &crate::workspace::layer::LayerKind) -> bool {
+    matches!(
+        kind,
+        crate::workspace::layer::LayerKind::Gerber
+            | crate::workspace::layer::LayerKind::Drill
+            | crate::workspace::layer::LayerKind::Dxf
+            | crate::workspace::layer::LayerKind::Svg
+            | crate::workspace::layer::LayerKind::Text
+            | crate::workspace::layer::LayerKind::Drawing
+    )
+}
+
 /// Top-level application state
 pub struct TekkCamApp {
     /// The active project (layers, objects, operations)
@@ -310,6 +322,7 @@ pub struct UiState {
     pub console_input: String,
     pub text_layer_input: String,
     pub text_layer_height_mm: f64,
+    pub text_layer_font_style: crate::workspace::layer::TextFontStyle,
     pub show_text_dialog: bool,
     pub show_drawing_dialog: bool,
     pub drawing_strokes: Vec<Vec<[f32; 2]>>,
@@ -427,6 +440,7 @@ impl Default for UiState {
             console_input: String::new(),
             text_layer_input: String::new(),
             text_layer_height_mm: 5.0,
+            text_layer_font_style: crate::workspace::layer::TextFontStyle::default(),
             show_text_dialog: false,
             show_drawing_dialog: false,
             drawing_strokes: Vec::new(),
@@ -618,7 +632,15 @@ impl TekkCamApp {
 
     pub fn add_operation(&mut self, mut operation: crate::cam::operations::Operation) {
         operation.tool = self.project.default_tool.clone();
-        if operation.source_layer_id.is_none() {
+        let uses_model = matches!(
+            &operation.kind,
+            crate::cam::operations::OperationKind::ModelProfile2D
+                | crate::cam::operations::OperationKind::Roughing3D
+                | crate::cam::operations::OperationKind::FinishRaster3D
+                | crate::cam::operations::OperationKind::FinishContour3D
+                | crate::cam::operations::OperationKind::FinishWaterline3D
+        );
+        if operation.source_layer_id.is_none() && !uses_model {
             operation.source_layer_id = self
                 .ui_state
                 .selected_layer
@@ -863,7 +885,34 @@ impl TekkCamApp {
             return;
         }
         match crate::importers::load_layer(&path_str, self.project.layers.len()) {
-            Ok((layer, notes)) => {
+            Ok((mut layer, notes)) => {
+                // SVG coordinates are translated from the document viewBox, whose
+                // Y-up conversion commonly leaves the artwork below the origin.
+                // Place the imported drawing at the center of the stock in XY.
+                if layer.kind == crate::workspace::layer::LayerKind::Svg {
+                    if let Some((min, max)) = layer.geometry.bounds() {
+                        let stock_origin = self.project.setup.stock_origin_mm;
+                        let stock_size = self.project.setup.stock_size_mm;
+                        let artwork_center = [(min[0] + max[0]) * 0.5, (min[1] + max[1]) * 0.5];
+                        let stock_center = [
+                            (stock_origin[0] + stock_size[0] * 0.5) as f32,
+                            (stock_origin[1] + stock_size[1] * 0.5) as f32,
+                        ];
+                        let offset = [
+                            stock_center[0] - artwork_center[0],
+                            stock_center[1] - artwork_center[1],
+                        ];
+                        for point in layer
+                            .geometry
+                            .lines
+                            .iter_mut()
+                            .chain(layer.geometry.triangles.iter_mut())
+                        {
+                            point[0] += offset[0];
+                            point[1] += offset[1];
+                        }
+                    }
+                }
                 let log = &mut self.ui_state.console_log;
                 log.push(format!(
                     "✔ Imported {} ({:?}): {} triangles, {} lines",
@@ -1027,13 +1076,7 @@ impl TekkCamApp {
                 layer.visible && !layer.geometry.is_empty()
             }
         });
-        let surface_layer = source_layer.is_some_and(|layer| {
-            matches!(
-                layer.kind,
-                crate::workspace::layer::LayerKind::Text
-                    | crate::workspace::layer::LayerKind::Drawing
-            )
-        });
+        let surface_layer = source_layer.is_some_and(|layer| uses_stock_surface(&layer.kind));
         let geometry = source_layer.map(|layer| layer.geometry.clone());
         if !model_required && geometry.is_none() {
             self.ui_state
@@ -1611,6 +1654,24 @@ impl eframe::App for TekkCamApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_supported_2d_layer_uses_the_stock_surface() {
+        use crate::workspace::layer::LayerKind;
+
+        for kind in [
+            LayerKind::Gerber,
+            LayerKind::Drill,
+            LayerKind::Dxf,
+            LayerKind::Svg,
+            LayerKind::Text,
+            LayerKind::Drawing,
+        ] {
+            assert!(uses_stock_surface(&kind), "{kind:?} should use stock top");
+        }
+        assert!(!uses_stock_surface(&LayerKind::Gcode));
+        assert!(!uses_stock_surface(&LayerKind::Placeholder));
+    }
 
     #[test]
     fn project_history_restores_undo_and_redo_snapshots() {
