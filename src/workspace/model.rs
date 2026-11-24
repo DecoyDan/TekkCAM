@@ -92,11 +92,9 @@ impl Default for ModelTransform {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct StockFit {
-    pub scale: f64,
-    pub rotation_degrees: [f64; 3],
-    pub translation_mm: [f64; 3],
-    pub bounds: [[f32; 3]; 2],
+pub struct StockEnvelope {
+    pub stock_origin_mm: [f64; 3],
+    pub stock_size_mm: [f64; 3],
     pub xy_margin_mm: f64,
     pub z_margin_mm: f64,
 }
@@ -143,29 +141,25 @@ impl Model {
         self.transform = ModelTransform::default();
     }
 
-    /// Compute a proportional scale and placement that fits the model within
-    /// the stock. The model is centered in XY and placed below the stock's top face.
-    pub fn fit_to_stock(
+    /// Calculate stock bounds around the model's existing transformed geometry.
+    /// This never changes the model transform or its dimensions.
+    pub fn stock_envelope(
         &self,
         setup: &crate::workspace::setup::MachiningSetup,
         xy_tool_clearance_mm: f64,
-        rotation_degrees: [f64; 3],
-    ) -> Result<StockFit, String> {
+    ) -> Result<StockEnvelope, String> {
         use crate::workspace::setup::WorkAxis;
 
         setup.validate()?;
         if !xy_tool_clearance_mm.is_finite() || xy_tool_clearance_mm < 0.0 {
             return Err("tool clearance must be a finite non-negative value".into());
         }
-        if rotation_degrees.iter().any(|value| !value.is_finite()) {
-            return Err("model orientation must contain finite angles".into());
+        let bounds = self.transformed_bounds();
+        if bounds.iter().flatten().any(|value| !value.is_finite()) {
+            return Err("model bounds must be finite to fit the stock".into());
         }
-        let oriented = reduce_bounds(
-            bounds_corners(self.bounds).map(|point| rotate_point(point, rotation_degrees)),
-        );
-        let dims = std::array::from_fn::<_, 3, _>(|axis| {
-            (oriented[1][axis] - oriented[0][axis]).abs() as f64
-        });
+        let dims =
+            std::array::from_fn::<_, 3, _>(|axis| (bounds[1][axis] - bounds[0][axis]).abs() as f64);
         if dims
             .iter()
             .any(|dimension| !dimension.is_finite() || *dimension <= 1e-9)
@@ -175,69 +169,27 @@ impl Model {
 
         let xy_margin = setup.boundary_margin_mm.max(xy_tool_clearance_mm);
         let z_margin = setup.boundary_margin_mm;
-        let z_stock_min = match setup.axis {
-            WorkAxis::ZUp => setup.stock_origin_mm[2],
-            WorkAxis::ZDown => setup.stock_origin_mm[2] - setup.stock_size_mm[2],
-        };
-        let z_stock_max = match setup.axis {
-            WorkAxis::ZUp => setup.stock_origin_mm[2] + setup.stock_size_mm[2],
-            WorkAxis::ZDown => setup.stock_origin_mm[2],
-        };
-        let available = [
-            setup.stock_size_mm[0] - xy_margin * 2.0,
-            setup.stock_size_mm[1] - xy_margin * 2.0,
-            setup.stock_size_mm[2] - z_margin * 2.0,
+        let stock_origin_mm = [
+            bounds[0][0] as f64 - xy_margin,
+            bounds[0][1] as f64 - xy_margin,
+            match setup.axis {
+                WorkAxis::ZUp => bounds[0][2] as f64 - z_margin,
+                WorkAxis::ZDown => bounds[1][2] as f64 + z_margin,
+            },
         ];
-        if available.iter().any(|dimension| *dimension <= 0.0) {
-            return Err("stock is too small for the tool clearance and boundary margin".into());
-        }
-        let fit_scale = (0..3)
-            .map(|axis| available[axis] / dims[axis])
-            .fold(f64::INFINITY, f64::min);
-        if !fit_scale.is_finite() || fit_scale <= 0.0 {
-            return Err("could not calculate a valid model-to-stock scale".into());
-        }
-
-        let rotated_center = [
-            (oriented[0][0] as f64 + oriented[1][0] as f64) * 0.5,
-            (oriented[0][1] as f64 + oriented[1][1] as f64) * 0.5,
-            (oriented[0][2] as f64 + oriented[1][2] as f64) * 0.5,
+        let stock_size_mm = [
+            dims[0] + xy_margin * 2.0,
+            dims[1] + xy_margin * 2.0,
+            dims[2] + z_margin * 2.0,
         ];
-        let stock_center = [
-            setup.stock_origin_mm[0] + setup.stock_size_mm[0] * 0.5,
-            setup.stock_origin_mm[1] + setup.stock_size_mm[1] * 0.5,
-        ];
-        let target_top = z_stock_max - z_margin;
-        let target_center = [
-            stock_center[0],
-            stock_center[1],
-            target_top - dims[2] * fit_scale * 0.5,
-        ];
-        let translation_mm =
-            std::array::from_fn(|axis| target_center[axis] - rotated_center[axis] * fit_scale);
-        let transform = ModelTransform {
-            scale: fit_scale,
-            rotation_degrees,
-            translation_mm,
-        };
-        let bounds = reduce_bounds(
-            bounds_corners(self.bounds).map(|point| transform_point_f64(point, transform)),
-        );
-        let scale = fit_scale;
-        if !scale.is_finite()
-            || translation_mm.iter().any(|value| !value.is_finite())
-            || bounds.iter().flatten().any(|value| !value.is_finite())
+        if stock_origin_mm.iter().any(|value| !value.is_finite())
+            || stock_size_mm.iter().any(|value| !value.is_finite())
         {
-            return Err("fit would exceed the supported model coordinate range".into());
+            return Err("stock envelope exceeds the supported coordinate range".into());
         }
-        if (bounds[0][2] as f64) < z_stock_min + z_margin - 1e-6 {
-            return Err("model could not be placed within the stock Z bounds".into());
-        }
-        Ok(StockFit {
-            scale,
-            rotation_degrees,
-            translation_mm,
-            bounds,
+        Ok(StockEnvelope {
+            stock_origin_mm,
+            stock_size_mm,
             xy_margin_mm: xy_margin,
             z_margin_mm: z_margin,
         })

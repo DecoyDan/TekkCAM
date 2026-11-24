@@ -307,6 +307,7 @@ mod tests {
         let mut tool = Tool::default();
         tool.flute_length_mm = 5.0;
         tool.stickout_mm = 5.0;
+        tool.holder_clearance_mm = 3.0;
         let model = [[2.0, 2.0, 0.0], [98.0, 98.0, 10.0]];
         let issues = setup.validate_for(model, &tool);
         assert!(issues.iter().any(|issue| issue.contains("flute length")));

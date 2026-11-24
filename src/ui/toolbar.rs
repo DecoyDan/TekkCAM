@@ -1,31 +1,43 @@
 use crate::app::TekkCamApp;
 use eframe::egui;
 
-const ACCENT: egui::Color32 = egui::Color32::from_rgb(80, 140, 255);
-const SUCCESS: egui::Color32 = egui::Color32::from_rgb(60, 200, 100);
 const DANGER: egui::Color32 = egui::Color32::from_rgb(220, 70, 70);
 const ICON_LAYOUT_SIDEBAR_LEFT: char = '\u{EBF3}';
 const ICON_LAYOUT_SIDEBAR_LEFT_OFF: char = '\u{EC02}';
 const ICON_LAYOUT_SIDEBAR_RIGHT: char = '\u{EBF4}';
 const ICON_LAYOUT_SIDEBAR_RIGHT_OFF: char = '\u{EC00}';
-const ICON_LAYOUT_PANEL: char = '\u{EBF2}';
-const ICON_LAYOUT_PANEL_OFF: char = '\u{EC01}';
 const ICON_PLUS: char = '\u{F067}';
-const ICON_CODE: char = '\u{F121}';
 const ICON_CUBE_OUTLINE: char = '\u{F01A7}';
 
 pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
+    let accent = if app.ui_state.theme == crate::app::AppTheme::Dark {
+        crate::ui::palette::SWISS_PLUM
+    } else {
+        crate::ui::palette::LIGHT_ACCENT_BLUE
+    };
+    let success = if app.ui_state.theme == crate::app::AppTheme::Dark {
+        crate::ui::palette::FISHY_HOUSE
+    } else {
+        egui::Color32::from_rgb(60, 200, 100)
+    };
     let panel_bg = if app.ui_state.theme == crate::app::AppTheme::Light {
         egui::Color32::from_rgb(228, 229, 241)
     } else {
-        egui::Color32::from_rgb(14, 14, 20)
+        crate::ui::palette::MYSTERIOUS_DEPTHS
     };
-    egui::TopBottomPanel::top("menu_bar")
+    let toolbar_border = if app.ui_state.theme == crate::app::AppTheme::Light {
+        egui::Color32::from_rgb(196, 198, 210)
+    } else {
+        egui::Color32::from_rgb(63, 64, 72)
+    };
+    let menu_bar_response = egui::TopBottomPanel::top("menu_bar")
         .exact_height(42.0)
+        .show_separator_line(false)
         .frame(
             egui::Frame::new()
                 .fill(panel_bg)
-                .inner_margin(egui::Margin::symmetric(8, 6)),
+                .stroke(egui::Stroke::new(1.0_f32, toolbar_border))
+                .inner_margin(egui::Margin::symmetric(8, 4)),
         )
         .show(ctx, |ui| {
             ui.horizontal_centered(|ui| {
@@ -34,7 +46,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                 ui.label(
                     egui::RichText::new("⚙ TekkCAM")
                         .size(16.0)
-                        .color(ACCENT)
+                        .color(accent)
                         .strong(),
                 );
                 ui.separator();
@@ -137,9 +149,10 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
 
                 // ── Right-aligned status + connect button ─────────────────
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
                     // Machine connection badge
                     let (badge_color, badge_text) = if app.ui_state.machine_connected {
-                        (SUCCESS, "● Connected")
+                        (success, "● Connected")
                     } else {
                         (DANGER, "● Disconnected")
                     };
@@ -163,45 +176,16 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                         }
                     }
 
-                    ui.add_space(8.0);
-
                     if app.has_active_project() {
-                        if app.has_properties_content()
-                            && ui
-                                .add(
-                                    egui::Button::new(
-                                        egui::RichText::new(
-                                            if app.ui_state.show_right_sidebar {
-                                                ICON_LAYOUT_SIDEBAR_RIGHT
-                                            } else {
-                                                ICON_LAYOUT_SIDEBAR_RIGHT_OFF
-                                            }
-                                            .to_string(),
-                                        )
-                                        .size(18.0)
-                                        .font(egui::FontId::new(
-                                            18.0,
-                                            egui::FontFamily::Name("sidebar_icons".into()),
-                                        ))
-                                        .color(ui.visuals().text_color()),
-                                    )
-                                    .fill(egui::Color32::TRANSPARENT)
-                                    .stroke(egui::Stroke::NONE),
-                                )
-                                .on_hover_text("Toggle properties and setup panel")
-                                .clicked()
-                        {
-                            app.ui_state.show_right_sidebar = !app.ui_state.show_right_sidebar;
-                        }
-
                         if ui
-                            .add(
+                            .add_sized(
+                                [28.0, 28.0],
                                 egui::Button::new(
                                     egui::RichText::new(
-                                        if app.ui_state.show_console {
-                                            ICON_LAYOUT_PANEL
+                                        if app.ui_state.show_right_sidebar {
+                                            ICON_LAYOUT_SIDEBAR_RIGHT
                                         } else {
-                                            ICON_LAYOUT_PANEL_OFF
+                                            ICON_LAYOUT_SIDEBAR_RIGHT_OFF
                                         }
                                         .to_string(),
                                     )
@@ -215,14 +199,15 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                                 .fill(egui::Color32::TRANSPARENT)
                                 .stroke(egui::Stroke::NONE),
                             )
-                            .on_hover_text("Toggle editor and console panel (Ctrl+`)")
+                            .on_hover_text("Toggle right sidebar")
                             .clicked()
                         {
-                            app.ui_state.show_console = !app.ui_state.show_console;
+                            app.ui_state.show_right_sidebar = !app.ui_state.show_right_sidebar;
                         }
 
                         if ui
-                            .add(
+                            .add_sized(
+                                [28.0, 28.0],
                                 egui::Button::new(
                                     egui::RichText::new(
                                         if app.ui_state.show_left_sidebar {
@@ -249,7 +234,6 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                         }
                     }
 
-                    ui.add_space(8.0);
                     ui.label(
                         egui::RichText::new(&app.ui_state.status_message)
                             .size(11.0)
@@ -259,13 +243,16 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
             });
         });
 
+    let mut tool_bar_rect = None;
     if app.has_active_project() {
-        egui::TopBottomPanel::top("tool_creation_toolbar")
+        let tool_bar_response = egui::TopBottomPanel::top("tool_creation_toolbar")
             .exact_height(36.0)
+            .show_separator_line(false)
             .frame(
                 egui::Frame::new()
                     .fill(panel_bg)
-                    .inner_margin(egui::Margin::symmetric(12, 4)),
+                    .stroke(egui::Stroke::new(1.0_f32, toolbar_border))
+                    .inner_margin(egui::Margin::symmetric(10, 3)),
             )
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
@@ -400,23 +387,6 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                             app.ui_state.status_message = "Face selection finished".into();
                         }
                     }
-                    let generate_response = ui.add_sized(
-                        [30.0, 26.0],
-                        egui::Button::new(
-                            egui::RichText::new(ICON_CODE.to_string())
-                                .font(egui::FontId::new(
-                                    14.0,
-                                    egui::FontFamily::Name("sidebar_icons".into()),
-                                )),
-                        ),
-                    );
-                    if generate_response
-                        .on_hover_text("Generate G-code")
-                        .clicked()
-                    {
-                        app.generate_gcode();
-                    }
-                    ui.separator();
                     let (rect, response) =
                         ui.allocate_exact_size(egui::vec2(30.0, 26.0), egui::Sense::click());
                     if response.hovered() || response.is_pointer_button_down_on() {
@@ -451,20 +421,20 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                     let badge = egui::pos2(rect.right() - 6.0, rect.top() + 6.0);
                     ui.painter().circle_filled(badge, 5.0, panel_bg);
                     ui.painter()
-                        .circle_stroke(badge, 4.5, egui::Stroke::new(1.2_f32, ACCENT));
+                        .circle_stroke(badge, 4.5, egui::Stroke::new(1.2_f32, accent));
                     ui.painter().line_segment(
                         [
                             egui::pos2(badge.x - 2.0, badge.y),
                             egui::pos2(badge.x + 2.0, badge.y),
                         ],
-                        egui::Stroke::new(1.2_f32, ACCENT),
+                        egui::Stroke::new(1.2_f32, accent),
                     );
                     ui.painter().line_segment(
                         [
                             egui::pos2(badge.x, badge.y - 2.0),
                             egui::pos2(badge.x, badge.y + 2.0),
                         ],
-                        egui::Stroke::new(1.2_f32, ACCENT),
+                        egui::Stroke::new(1.2_f32, accent),
                     );
                     if response.clicked() {
                         app.ui_state.tool_editor = Some(crate::cam::tool::Tool::default());
@@ -527,5 +497,20 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                     }
                 });
             });
+        tool_bar_rect = Some(tool_bar_response.response.rect);
+    }
+
+    let border_painter = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Foreground,
+        egui::Id::new("toolbar_bottom_borders"),
+    ));
+    let border = egui::Stroke::new(1.0_f32, toolbar_border);
+    border_painter.hline(
+        menu_bar_response.response.rect.x_range(),
+        menu_bar_response.response.rect.bottom() - 0.5,
+        border,
+    );
+    if let Some(rect) = tool_bar_rect {
+        border_painter.hline(rect.x_range(), rect.bottom() - 0.5, border);
     }
 }

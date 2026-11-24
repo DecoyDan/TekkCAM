@@ -3,19 +3,25 @@ use crate::cam::operations::OperationKind;
 use crate::workspace::layer::{Layer, LayerKind, TextFontStyle};
 use eframe::egui;
 
-const ACCENT: egui::Color32 = egui::Color32::from_rgb(80, 140, 255);
 const ICON_EYE: char = '\u{F06E}';
 const ICON_EYE_OFF: char = '\u{F070}';
+const ICON_CHECK: char = '\u{F00C}';
+const ICON_PENDING: char = '\u{F111}';
 
 pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
     let panel_bg = if app.ui_state.theme == crate::app::AppTheme::Light {
         egui::Color32::from_rgb(228, 229, 241)
     } else {
-        egui::Color32::from_rgb(20, 20, 28)
+        crate::ui::palette::MYSTERIOUS_DEPTHS
     };
     let dark = app.ui_state.theme == crate::app::AppTheme::Dark;
+    let accent = if dark {
+        crate::ui::palette::SWISS_PLUM
+    } else {
+        crate::ui::palette::LIGHT_ACCENT_BLUE
+    };
     let selected_bg = if dark {
-        egui::Color32::from_rgb(55, 65, 90)
+        crate::ui::palette::MYSTERIOUS_DEPTHS
     } else {
         egui::Color32::from_rgb(210, 211, 219)
     };
@@ -37,7 +43,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
         .frame(
             egui::Frame::new()
                 .fill(panel_bg)
-                .inner_margin(egui::Margin::same(8)),
+                .inner_margin(egui::Margin::same(12)),
         )
         .show(ctx, |ui| {
             // ── Objects / Layers section ──────────────────────────────────
@@ -48,7 +54,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                 if ui
                     .add_sized(
                         [28.0, 28.0],
-                        egui::Button::new(egui::RichText::new("tT").color(ACCENT)),
+                        egui::Button::new(egui::RichText::new("tT").color(egui::Color32::WHITE)),
                     )
                     .on_hover_text("Text")
                     .clicked()
@@ -65,7 +71,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                         egui::Button::new(
                             egui::RichText::new("✏")
                                 .font(egui::FontId::proportional(17.0))
-                                .color(ACCENT),
+                                .color(egui::Color32::WHITE),
                         ),
                     )
                     .on_hover_text("Draw");
@@ -76,12 +82,15 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                 if ui
                     .add_sized(
                         [28.0, 28.0],
-                        egui::Button::new(egui::RichText::new("+").color(ACCENT)),
+                        egui::Button::new(
+                            egui::RichText::new("+").color(egui::Color32::WHITE),
+                        ),
                     )
                     .on_hover_text("Add layer")
                     .clicked()
                 {
                     app.project.layers.push(Layer::new_placeholder());
+                    app.invalidate_gcode_and_simulation();
                     app.ui_state.project_dirty = true;
                 }
             });
@@ -126,6 +135,8 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                     .corner_radius(egui::CornerRadius::same(4))
                     .inner_margin(egui::Margin::symmetric(6, 3))
                     .show(ui, |ui| {
+                        let row_width = ui.available_width();
+                        ui.set_width(row_width);
                         ui.horizontal(|ui| {
                             let visibility_icon = egui::RichText::new(vis_icon.to_string())
                                 .font(egui::FontId::new(
@@ -146,6 +157,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                                 egui::RichText::new(label).size(13.0).color(row_text),
                             )
                             .selected(*is_selected)
+                            .corner_radius(egui::CornerRadius::same(5))
                             .frame(false);
                             let layer_response =
                                 ui.add_sized([ui.available_width(), 24.0], layer_button);
@@ -300,8 +312,11 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                 let mut add_model_operation: Option<(usize, crate::cam::operations::Operation)> =
                     None;
                 for (index, (selected, visible, label)) in model_display.iter().enumerate() {
-                    let response = ui
-                        .horizontal(|ui| {
+                    let mut child_hit_rects = Vec::with_capacity(2);
+                    let row = ui.allocate_ui_with_layout(
+                        egui::vec2(ui.available_width(), 26.0),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
                             let visibility_icon = if *visible { ICON_EYE } else { ICON_EYE_OFF };
                             let icon = egui::RichText::new(visibility_icon.to_string())
                                 .font(egui::FontId::new(
@@ -309,54 +324,51 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                                     egui::FontFamily::Name("sidebar_icons".into()),
                                 ))
                                 .color(row_text);
-                            if ui
+                            let visibility_response = ui
                                 .add_sized([22.0, 20.0], egui::Button::new(icon).frame(false))
-                                .on_hover_text(if *visible { "Hide model" } else { "Show model" })
-                                .clicked()
-                            {
+                                .on_hover_text(if *visible { "Hide model" } else { "Show model" });
+                            child_hit_rects.push(visibility_response.rect);
+                            if visibility_response.clicked() {
                                 changed_model_visibility = Some((index, !*visible));
                             }
-                            if ui.selectable_label(*selected, label).clicked() {
+                            show_model_context_menu(
+                                &visibility_response,
+                                index,
+                                &mut add_model_operation,
+                                &mut delete_model,
+                            );
+                            let model_response = ui.add(
+                                egui::Button::new(label)
+                                    .selected(*selected)
+                                    .corner_radius(egui::CornerRadius::same(3))
+                                    .frame(false),
+                            );
+                            child_hit_rects.push(model_response.rect);
+                            if model_response.clicked() {
                                 select_model = Some(index);
                             }
-                        })
-                        .response;
-                    response.context_menu(|ui| {
-                        ui.menu_button("Add CAM operation", |ui| {
-                            for (label, operation) in [
-                                (
-                                    "STEP Face Profile",
-                                    crate::cam::operations::Operation::model_profile_2d(),
-                                ),
-                                (
-                                    "3D Stock Roughing",
-                                    crate::cam::operations::Operation::roughing_3d(),
-                                ),
-                                (
-                                    "3D Raster Finish",
-                                    crate::cam::operations::Operation::finish_raster_3d(),
-                                ),
-                                (
-                                    "3D Contour-Parallel Finish",
-                                    crate::cam::operations::Operation::finish_contour_3d(),
-                                ),
-                                (
-                                    "3D Waterline Finish",
-                                    crate::cam::operations::Operation::finish_waterline_3d(),
-                                ),
-                            ] {
-                                if ui.button(label).clicked() {
-                                    add_model_operation = Some((index, operation));
-                                    ui.close_menu();
-                                }
-                            }
+                            show_model_context_menu(
+                                &model_response,
+                                index,
+                                &mut add_model_operation,
+                                &mut delete_model,
+                            );
+                        },
+                    );
+                    let response = row.response.interact(egui::Sense::click());
+                    let pointer_over_child = ctx
+                        .input(|input| input.pointer.interact_pos())
+                        .is_some_and(|position| {
+                            child_hit_rects.iter().any(|rect| rect.contains(position))
                         });
-                        ui.separator();
-                        if ui.button("Delete model").clicked() {
-                            delete_model = Some(index);
-                            ui.close_menu();
-                        }
-                    });
+                    if !pointer_over_child {
+                        show_model_context_menu(
+                            &response,
+                            index,
+                            &mut add_model_operation,
+                            &mut delete_model,
+                        );
+                    }
                 }
                 if let Some((index, operation)) = add_model_operation {
                     app.ui_state.selected_model = Some(index);
@@ -427,6 +439,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
 
             let mut select_op: Option<usize> = None;
             let mut delete_op: Option<usize> = None;
+            let mut set_operation_exclusion: Option<(usize, bool)> = None;
 
             for (i, (is_selected, icon, name, generated)) in op_display.iter().enumerate() {
                 let row_bg = if *is_selected {
@@ -434,34 +447,58 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                 } else {
                     egui::Color32::TRANSPARENT
                 };
+                let row_border = if *is_selected {
+                    accent
+                } else if dark {
+                    egui::Color32::from_rgb(63, 64, 72)
+                } else {
+                    egui::Color32::from_rgb(196, 198, 210)
+                };
 
                 let response = egui::Frame::new()
                     .fill(row_bg)
+                    .stroke(egui::Stroke::new(
+                        if *is_selected { 1.2_f32 } else { 0.8 },
+                        row_border,
+                    ))
                     .corner_radius(egui::CornerRadius::same(4))
                     .inner_margin(egui::Margin::symmetric(6, 3))
                     .show(ui, |ui| {
+                        let row_width = ui.available_width();
+                        ui.set_width(row_width);
                         ui.horizontal(|ui| {
                             let state_color = if *generated {
-                                egui::Color32::from_rgb(60, 200, 100)
+                                if dark {
+                                    crate::ui::palette::FISHY_HOUSE
+                                } else {
+                                    egui::Color32::from_rgb(60, 200, 100)
+                                }
                             } else {
                                 egui::Color32::from_rgb(180, 160, 60)
                             };
-                            ui.label(
-                                egui::RichText::new(format!("{icon} {name}"))
-                                    .size(13.0)
-                                    .color(row_text),
+                            let state_icon = if *generated {
+                                ICON_CHECK
+                            } else {
+                                ICON_PENDING
+                            };
+                            let state_text = egui::RichText::new(state_icon.to_string())
+                                .font(egui::FontId::new(
+                                    11.0,
+                                    egui::FontFamily::Name("download_icon".into()),
+                                ))
+                                .color(state_color);
+                            let content_width = (row_width - 8.0).max(0.0);
+                            let state_width = 14.0_f32.min(content_width);
+                            ui.add_sized(
+                                [(content_width - state_width).max(0.0), 18.0],
+                                egui::Label::new(
+                                    egui::RichText::new(format!("{icon} {name}"))
+                                        .size(13.0)
+                                        .color(row_text),
+                                )
+                                .truncate(),
                             );
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    let state_text = if *generated { "✓" } else { "…" };
-                                    ui.label(
-                                        egui::RichText::new(state_text)
-                                            .size(11.0)
-                                            .color(state_color),
-                                    );
-                                },
-                            );
+                            ui.add_sized([state_width, 18.0], egui::Label::new(state_text));
                         });
                     })
                     .response;
@@ -471,6 +508,15 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                     select_op = Some(i);
                 }
                 response.context_menu(|ui| {
+                    let mut add_to_toolpath =
+                        !app.project.operations[i].excluded_from_toolpath;
+                    if ui
+                        .checkbox(&mut add_to_toolpath, "Add to toolpath")
+                        .changed()
+                    {
+                        set_operation_exclusion = Some((i, !add_to_toolpath));
+                    }
+                    ui.separator();
                     if ui.button("Delete operation").clicked() {
                         delete_op = Some(i);
                         ui.close_menu();
@@ -481,6 +527,12 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
             if let Some(i) = select_op {
                 app.ui_state.selected_operation = Some(i);
             }
+            if let Some((index, excluded)) = set_operation_exclusion {
+                app.project.operations[index].excluded_from_toolpath = excluded;
+                app.invalidate_gcode_and_simulation();
+                app.ui_state.project_dirty = true;
+                app.scene_sig.clear();
+            }
             if let Some(i) = delete_op {
                 app.project.operations.remove(i);
                 app.ui_state.selected_operation = if app.project.operations.is_empty() {
@@ -488,6 +540,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                 } else {
                     Some(i.min(app.project.operations.len() - 1))
                 };
+                app.invalidate_gcode_and_simulation();
                 app.ui_state.project_dirty = true;
                 app.scene_sig.clear();
             }
@@ -499,9 +552,11 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                     egui::Layout::centered_and_justified(egui::Direction::TopDown),
                     |ui| {
                         ui.label(
-                            egui::RichText::new("No operations yet.\nUse the toolbar to add one.")
-                                .size(11.0)
-                                .color(egui::Color32::from_rgb(100, 100, 120)),
+                            egui::RichText::new(
+                                "Your toolpaths will appear here.\nUse + in the top bar to add an operation.",
+                            )
+                            .size(12.0)
+                            .color(egui::Color32::from_rgb(125, 128, 148)),
                         );
                     },
                 );
@@ -519,7 +574,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                     ui.label(
                         egui::RichText::new(app.ui_state.display_units.label())
                             .size(11.0)
-                            .color(ACCENT),
+                            .color(accent),
                     );
                 });
             });
@@ -649,6 +704,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                     rotation_degrees: 0.0,
                 });
                 app.project.layers.push(layer);
+                app.invalidate_gcode_and_simulation();
                 let index = app.project.layers.len() - 1;
                 app.ui_state.selected_layer = Some(index);
                 app.ui_state.placing_text_layer = Some(index);
@@ -772,6 +828,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                 app.project.layers.len(),
             );
             app.project.layers.push(layer);
+            app.invalidate_gcode_and_simulation();
             let index = app.project.layers.len() - 1;
             app.ui_state.selected_layer = Some(index);
             app.ui_state.placing_text_layer = Some(index);
@@ -867,4 +924,48 @@ fn apply_text_font_style(
 
 fn section_header(ui: &mut egui::Ui, title: &str, color: egui::Color32) {
     ui.label(egui::RichText::new(title).size(10.0).color(color).strong());
+}
+
+fn show_model_context_menu(
+    response: &egui::Response,
+    index: usize,
+    add_model_operation: &mut Option<(usize, crate::cam::operations::Operation)>,
+    delete_model: &mut Option<usize>,
+) {
+    response.context_menu(|ui| {
+        ui.menu_button("Add CAM operation", |ui| {
+            for (label, operation) in [
+                (
+                    "STEP Face Profile",
+                    crate::cam::operations::Operation::model_profile_2d(),
+                ),
+                (
+                    "3D Stock Roughing",
+                    crate::cam::operations::Operation::roughing_3d(),
+                ),
+                (
+                    "3D Raster Finish",
+                    crate::cam::operations::Operation::finish_raster_3d(),
+                ),
+                (
+                    "3D Contour-Parallel Finish",
+                    crate::cam::operations::Operation::finish_contour_3d(),
+                ),
+                (
+                    "3D Waterline Finish",
+                    crate::cam::operations::Operation::finish_waterline_3d(),
+                ),
+            ] {
+                if ui.button(label).clicked() {
+                    *add_model_operation = Some((index, operation));
+                    ui.close_menu();
+                }
+            }
+        });
+        ui.separator();
+        if ui.button("Delete model").clicked() {
+            *delete_model = Some(index);
+            ui.close_menu();
+        }
+    });
 }

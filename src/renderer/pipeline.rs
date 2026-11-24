@@ -239,6 +239,8 @@ impl Scene {
         };
         if view_3d && render_stock {
             append_stock_solid(&mut scene, setup, stock_material, orbit, render_stock);
+        } else if !view_3d {
+            append_stock_top_surface(&mut scene, setup, stock_material);
         }
         for l in layers.iter().filter(|l| l.visible) {
             let color = l.color;
@@ -413,7 +415,10 @@ impl Scene {
                 }
             }
         }
-        for op in operations.iter().filter(|op| op.generated) {
+        for op in operations
+            .iter()
+            .filter(|op| op.generated && !op.excluded_from_toolpath)
+        {
             let colour = |kind| match kind {
                 MoveKind::Rapid => [0.35, 0.55, 0.95, 0.55],
                 MoveKind::Feed => [1.0, 0.45, 0.15, 1.0],
@@ -459,6 +464,39 @@ impl Scene {
                     ),
                 })
             })
+    }
+}
+
+fn append_stock_top_surface(scene: &mut Scene, setup: &MachiningSetup, material: StockMaterial) {
+    let min = setup.stock_origin_mm;
+    let max_x = min[0] + setup.stock_size_mm[0];
+    let max_y = min[1] + setup.stock_size_mm[1];
+    let corners = [
+        [min[0] as f32, min[1] as f32],
+        [max_x as f32, min[1] as f32],
+        [max_x as f32, max_y as f32],
+        [min[0] as f32, max_y as f32],
+    ];
+    let base = material.color();
+    let fill = [base[0] * 0.72, base[1] * 0.72, base[2] * 0.72, 1.0];
+    for triangle in [[0, 1, 2], [0, 2, 3]] {
+        scene.triangles.extend(triangle.map(|index| Vertex {
+            pos: corners[index],
+            color: fill,
+        }));
+    }
+    let edge = [0.82, 0.84, 0.9, 1.0];
+    for (start, end) in [(0, 1), (1, 2), (2, 3), (3, 0)] {
+        scene.lines.extend([
+            Vertex {
+                pos: corners[start],
+                color: edge,
+            },
+            Vertex {
+                pos: corners[end],
+                color: edge,
+            },
+        ]);
     }
 }
 
@@ -635,7 +673,7 @@ fn append_stock_removal_preview(
     } else {
         operations
             .iter()
-            .filter(|operation| operation.generated)
+            .filter(|operation| operation.generated && !operation.excluded_from_toolpath)
             .map(|operation| {
                 (
                     operation.toolpath.moves.clone(),

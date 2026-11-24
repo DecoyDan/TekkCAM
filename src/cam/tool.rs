@@ -37,7 +37,7 @@ fn default_stickout() -> f64 {
     20.0
 }
 fn default_holder_clearance() -> f64 {
-    3.0
+    0.0
 }
 
 impl Default for Tool {

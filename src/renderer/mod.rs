@@ -41,6 +41,7 @@ impl ViewportRenderer {
 pub struct ViewportCallback {
     pub camera: Camera2D,
     pub show_grid: bool,
+    pub grid_origin_mm: [f32; 2],
     /// Viewport size in egui points
     pub viewport_size: [f32; 2],
     /// Geometry to draw (re-uploaded only when `scene.revision` changes)
@@ -67,6 +68,7 @@ impl egui_wgpu::CallbackTrait for ViewportCallback {
                 !(self.scene.triangles.is_empty()
                     && self.scene.lines.is_empty()
                     && self.scene.toolpaths.is_empty()),
+                self.grid_origin_mm,
             );
             let vp = renderer.camera.view_proj_matrix((
                 self.viewport_size[0].max(1.0),

@@ -40,6 +40,9 @@ pub struct Operation {
     #[serde(default)]
     pub manual_face_selection: bool,
     pub generated: bool,
+    /// Exclude this operation's generated path from program output.
+    #[serde(default)]
+    pub excluded_from_toolpath: bool,
     #[serde(default)]
     pub toolpath: Toolpath,
     #[serde(default)]
@@ -77,6 +80,7 @@ impl Operation {
             source_face_ids: Vec::new(),
             manual_face_selection: false,
             generated: false,
+            excluded_from_toolpath: false,
             toolpath: Toolpath::default(),
             plugin_parameters: Vec::new(),
             ramp_angle_deg: 0.0,

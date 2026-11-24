@@ -1,6 +1,6 @@
 use crate::{
     renderer::{camera::Camera2D, pipeline::Scene, ViewportRenderer},
-    ui::{console, properties, sidebar, toolbar, viewport},
+    ui::{properties, sidebar, toolbar, viewport},
     workspace::project::Project,
 };
 use eframe::egui;
@@ -58,6 +58,47 @@ fn uses_stock_surface(kind: &crate::workspace::layer::LayerKind) -> bool {
             | crate::workspace::layer::LayerKind::Text
             | crate::workspace::layer::LayerKind::Drawing
     )
+}
+
+fn place_design_in_stock(
+    layer: &mut crate::workspace::layer::Layer,
+    setup: &crate::workspace::setup::MachiningSetup,
+) -> bool {
+    let Some((min, max)) = layer.geometry.bounds() else {
+        return false;
+    };
+    let stock_origin = setup.stock_origin_mm;
+    let stock_size = setup.stock_size_mm;
+    let stock_center = [
+        (stock_origin[0] + stock_size[0] * 0.5) as f32,
+        (stock_origin[1] + stock_size[1] * 0.5) as f32,
+    ];
+    let artwork_center = [(min[0] + max[0]) * 0.5, (min[1] + max[1]) * 0.5];
+    let artwork_size = [(max[0] - min[0]).max(0.0), (max[1] - min[1]).max(0.0)];
+    let margin = 2.0_f64.min(stock_size[0].min(stock_size[1]) * 0.05);
+    let available = [
+        (stock_size[0] - margin * 2.0).max(0.1) as f32,
+        (stock_size[1] - margin * 2.0).max(0.1) as f32,
+    ];
+    let scale = (available[0] / artwork_size[0].max(0.001))
+        .min(available[1] / artwork_size[1].max(0.001))
+        .min(1.0);
+    let moved = (stock_center[0] - artwork_center[0]).abs() > 0.001
+        || (stock_center[1] - artwork_center[1]).abs() > 0.001;
+    let scaled = scale < 0.999_999;
+    if !moved && !scaled {
+        return false;
+    }
+    for point in layer
+        .geometry
+        .lines
+        .iter_mut()
+        .chain(layer.geometry.triangles.iter_mut())
+    {
+        point[0] = stock_center[0] + (point[0] - artwork_center[0]) * scale;
+        point[1] = stock_center[1] + (point[1] - artwork_center[1]) * scale;
+    }
+    true
 }
 
 /// Top-level application state
@@ -174,19 +215,30 @@ pub(crate) fn apply_theme(ctx: &egui::Context, theme: AppTheme) {
         }
         AppTheme::Dark => {
             let mut visuals = egui::Visuals::dark();
-            visuals.panel_fill = egui::Color32::from_rgb(18, 18, 24);
-            visuals.extreme_bg_color = egui::Color32::from_rgb(12, 12, 16);
-            visuals.faint_bg_color = egui::Color32::from_rgb(22, 22, 30);
+            visuals.panel_fill = crate::ui::palette::MYSTERIOUS_DEPTHS;
+            visuals.window_fill = crate::ui::palette::CHARCOAL_SURFACE;
+            visuals.extreme_bg_color = crate::ui::palette::MYSTERIOUS_DEPTHS;
+            visuals.faint_bg_color = crate::ui::palette::MYSTERIOUS_DEPTHS;
             visuals.override_text_color = Some(egui::Color32::from_rgb(220, 220, 230));
-            visuals.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(28, 28, 38);
-            visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(35, 35, 48);
-            visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(55, 55, 75);
-            visuals.widgets.active.bg_fill = egui::Color32::from_rgb(80, 120, 200);
-            visuals.selection.bg_fill = egui::Color32::from_rgba_premultiplied(80, 120, 200, 180);
+            visuals.widgets.noninteractive.bg_fill = crate::ui::palette::MYSTERIOUS_DEPTHS;
+            visuals.widgets.inactive.bg_fill = crate::ui::palette::MYSTERIOUS_DEPTHS;
+            visuals.widgets.hovered.bg_fill = crate::ui::palette::MYSTERIOUS_DEPTHS;
+            visuals.widgets.hovered.bg_stroke.color = crate::ui::palette::SWISS_PLUM;
+            visuals.widgets.active.bg_fill = crate::ui::palette::SWISS_PLUM;
+            visuals.selection.bg_fill = egui::Color32::from_rgba_unmultiplied(89, 80, 184, 180);
             visuals
         }
     };
     visuals.window_corner_radius = egui::CornerRadius::same(8);
+    visuals.widgets.noninteractive.corner_radius = egui::CornerRadius::same(6);
+    visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(6);
+    visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(6);
+    visuals.widgets.active.corner_radius = egui::CornerRadius::same(6);
+    let mut style = (*ctx.style()).clone();
+    style.spacing.item_spacing = egui::vec2(8.0, 7.0);
+    style.spacing.button_padding = egui::vec2(10.0, 6.0);
+    style.spacing.interact_size.y = 28.0;
+    ctx.set_style(style);
     ctx.set_visuals(visuals);
 }
 
@@ -316,8 +368,6 @@ pub struct UiState {
     pub tool_details: Option<crate::cam::tool::Tool>,
     pub tool_image_cache: std::collections::HashMap<String, Option<egui::TextureHandle>>,
     pub show_fit_model_dialog: bool,
-    pub fit_model_rotation_deg: [i16; 3],
-    pub fit_model_preview: Option<(usize, crate::workspace::model::ModelTransform)>,
     pub show_settings: bool,
     pub console_input: String,
     pub text_layer_input: String,
@@ -434,8 +484,6 @@ impl Default for UiState {
             tool_details: None,
             tool_image_cache: std::collections::HashMap::new(),
             show_fit_model_dialog: false,
-            fit_model_rotation_deg: [0; 3],
-            fit_model_preview: None,
             show_settings: false,
             console_input: String::new(),
             text_layer_input: String::new(),
@@ -451,10 +499,7 @@ impl Default for UiState {
             text_placement_offset: [0.0; 2],
             text_resize: None,
             text_rotate: None,
-            console_log: vec![
-                format!("TekkCAM v{} — ready.", env!("CARGO_PKG_VERSION")),
-                "Load a Gerber / DXF / SVG file to begin.".into(),
-            ],
+            console_log: Vec::new(),
             status_message: "Ready".into(),
             machine_connected: false,
             show_grid: true,
@@ -463,7 +508,7 @@ impl Default for UiState {
             render_stock: false,
             show_left_sidebar: true,
             show_right_sidebar: true,
-            show_console: true,
+            show_console: false,
             model_orbit: [0.0, 0.0],
             display_units: DisplayUnits::default(),
             theme: AppTheme::Dark,
@@ -503,9 +548,19 @@ impl TekkCamApp {
                 "../assets/sidebar-icons.ttf"
             ))),
         );
+        fonts.font_data.insert(
+            "download_icon".into(),
+            Arc::new(egui::FontData::from_static(include_bytes!(
+                "../assets/download-icon.ttf"
+            ))),
+        );
         fonts.families.insert(
             egui::FontFamily::Name("sidebar_icons".into()),
             vec!["sidebar_icons".into()],
+        );
+        fonts.families.insert(
+            egui::FontFamily::Name("download_icon".into()),
+            vec!["download_icon".into()],
         );
         cc.egui_ctx.set_fonts(fonts);
 
@@ -625,8 +680,7 @@ impl TekkCamApp {
         self.ui_state.selected_operation = None;
         self.ui_state.project_dirty = false;
         self.ui_state.request_fit = true;
-        self.ui_state.gcode_text.clear();
-        self.ui_state.simulation_moves.clear();
+        self.invalidate_gcode_and_simulation();
         self.ui_state.status_message = "New project".into();
     }
 
@@ -650,16 +704,22 @@ impl TekkCamApp {
         }
         self.project.operations.push(operation);
         self.ui_state.selected_operation = Some(self.project.operations.len() - 1);
+        self.invalidate_gcode_and_simulation();
         self.ui_state.project_dirty = true;
+    }
+
+    /// Drop generated output whenever an operation or its source geometry changes.
+    pub fn invalidate_gcode_and_simulation(&mut self) {
+        self.ui_state.gcode_text.clear();
+        self.ui_state.simulation_moves.clear();
+        self.ui_state.simulator = crate::gcode::simulator::Simulator::default();
     }
 
     pub fn reset_stock_surface(&mut self) {
         for operation in &mut self.project.operations {
             operation.generate();
         }
-        self.ui_state.simulation_moves.clear();
-        self.ui_state.simulator = crate::gcode::simulator::Simulator::default();
-        self.ui_state.gcode_text.clear();
+        self.invalidate_gcode_and_simulation();
         self.scene_sig.clear();
     }
 
@@ -885,33 +945,16 @@ impl TekkCamApp {
             return;
         }
         match crate::importers::load_layer(&path_str, self.project.layers.len()) {
-            Ok((mut layer, notes)) => {
-                // SVG coordinates are translated from the document viewBox, whose
-                // Y-up conversion commonly leaves the artwork below the origin.
-                // Place the imported drawing at the center of the stock in XY.
-                if layer.kind == crate::workspace::layer::LayerKind::Svg {
-                    if let Some((min, max)) = layer.geometry.bounds() {
-                        let stock_origin = self.project.setup.stock_origin_mm;
-                        let stock_size = self.project.setup.stock_size_mm;
-                        let artwork_center = [(min[0] + max[0]) * 0.5, (min[1] + max[1]) * 0.5];
-                        let stock_center = [
-                            (stock_origin[0] + stock_size[0] * 0.5) as f32,
-                            (stock_origin[1] + stock_size[1] * 0.5) as f32,
-                        ];
-                        let offset = [
-                            stock_center[0] - artwork_center[0],
-                            stock_center[1] - artwork_center[1],
-                        ];
-                        for point in layer
-                            .geometry
-                            .lines
-                            .iter_mut()
-                            .chain(layer.geometry.triangles.iter_mut())
-                        {
-                            point[0] += offset[0];
-                            point[1] += offset[1];
-                        }
-                    }
+            Ok((mut layer, mut notes)) => {
+                if matches!(
+                    &layer.kind,
+                    crate::workspace::layer::LayerKind::Svg
+                        | crate::workspace::layer::LayerKind::Dxf
+                ) && place_design_in_stock(&mut layer, &self.project.setup)
+                {
+                    notes.push(
+                        "Centered the design in the stock and scaled it down if needed.".into(),
+                    );
                 }
                 let log = &mut self.ui_state.console_log;
                 log.push(format!(
@@ -926,6 +969,7 @@ impl TekkCamApp {
                 }
                 self.ui_state.status_message = format!("Loaded {}", layer.name);
                 self.project.layers.push(layer);
+                self.invalidate_gcode_and_simulation();
                 self.ui_state.project_dirty = true;
                 self.ui_state.selected_layer = Some(self.project.layers.len() - 1);
                 self.ui_state.request_fit = true;
@@ -1187,6 +1231,7 @@ impl TekkCamApp {
                     operation.generated = count > 0;
                     self.ui_state.project_dirty = true;
                 }
+                self.invalidate_gcode_and_simulation();
                 self.ui_state.console_log.push(format!(
                     "✔ Generated {count} {label} moves for '{}'",
                     result.name
@@ -1212,6 +1257,7 @@ impl TekkCamApp {
     }
 
     pub fn generate_gcode(&mut self) {
+        self.invalidate_gcode_and_simulation();
         match crate::gcode::generator::generate_with_setup(
             &self.project.operations,
             self.project.post_dialect,
@@ -1220,6 +1266,8 @@ impl TekkCamApp {
             Ok(text) => {
                 self.ui_state.gcode_text = text;
                 self.ui_state.show_gcode_editor = true;
+                self.ui_state.show_console = true;
+                self.ui_state.show_right_sidebar = true;
                 self.ui_state
                     .console_log
                     .push("✔ G-code generated from toolpaths".into());
@@ -1398,8 +1446,7 @@ impl TekkCamApp {
                 self.ui_state.selected_model = None;
                 self.ui_state.selected_operation = None;
                 self.ui_state.request_fit = true;
-                self.ui_state.gcode_text.clear();
-                self.ui_state.simulation_moves.clear();
+                self.invalidate_gcode_and_simulation();
                 self.ui_state
                     .console_log
                     .push(format!("✔ Opened project {}", path.display()));
@@ -1546,11 +1593,16 @@ impl TekkCamApp {
 }
 
 impl eframe::App for TekkCamApp {
+    fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
+        visuals.extreme_bg_color.to_normalized_gamma_f32()
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let toggle_console =
             ctx.input(|input| input.modifiers.ctrl && input.key_pressed(egui::Key::Backtick));
         if toggle_console {
             self.ui_state.show_console = !self.ui_state.show_console;
+            self.ui_state.show_right_sidebar = true;
         }
 
         self.poll_dialog_result();
@@ -1595,12 +1647,19 @@ impl eframe::App for TekkCamApp {
             painter.rect_filled(
                 bounds,
                 egui::CornerRadius::same(16),
-                egui::Color32::from_rgba_premultiplied(18, 18, 24, 220),
+                crate::ui::palette::MYSTERIOUS_DEPTHS.gamma_multiply(0.86),
             );
             painter.rect_stroke(
                 bounds,
                 egui::CornerRadius::same(16),
-                egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(100, 150, 240)),
+                egui::Stroke::new(
+                    2.0_f32,
+                    if self.ui_state.theme == AppTheme::Dark {
+                        crate::ui::palette::SWISS_PLUM
+                    } else {
+                        egui::Color32::from_rgb(100, 150, 240)
+                    },
+                ),
                 egui::StrokeKind::Inside,
             );
             painter.text(
@@ -1617,11 +1676,8 @@ impl eframe::App for TekkCamApp {
         // ── Top toolbar ──────────────────────────────────────────────────────
         toolbar::show(ctx, self);
 
-        // ── Bottom console panel ─────────────────────────────────────────────
+        // ── Console and properties share the right sidebar ───────────────────
         let has_active_project = self.has_active_project();
-        if self.ui_state.show_console && has_active_project {
-            console::show(ctx, self);
-        }
 
         crate::ui::machine::show(ctx, self);
 
@@ -1631,7 +1687,7 @@ impl eframe::App for TekkCamApp {
         }
 
         // ── Right properties panel ───────────────────────────────────────────
-        if self.ui_state.show_right_sidebar && self.has_properties_content() {
+        if self.ui_state.show_right_sidebar && has_active_project {
             properties::show(ctx, self);
         }
         properties::show_fit_model_dialog(ctx, self);

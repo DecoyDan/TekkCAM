@@ -9,7 +9,7 @@ struct GridUniforms {
     show_axes: f32,
     minor_spacing: f32,   // world units (mm) between minor lines
     major_spacing: f32,   // world units (mm) between major lines
-    _pad2: vec2<f32>,
+    grid_origin_mm: vec2<f32>,
 };
 
 @group(0) @binding(0)
@@ -71,6 +71,8 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let centred = screen_pos - u.viewport_size * 0.5;
     let wx = centred.x / u.zoom + pan_x;
     let wy = centred.y / u.zoom + pan_y;
+    let grid_x = wx - u.grid_origin_mm.x;
+    let grid_y = wy - u.grid_origin_mm.y;
 
     // Adaptive line width (thinner at low zoom)
     let px_per_mm = u.zoom;
@@ -81,21 +83,21 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     var minor_alpha = 0.0;
     if px_per_mm > 4.0 {
         let fade_factor = clamp((px_per_mm - 4.0) / 20.0, 0.0, 1.0);
-        let lx = grid_line(wx, u.minor_spacing, minor_line_w);
-        let ly = grid_line(wy, u.minor_spacing, minor_line_w);
+        let lx = grid_line(grid_x, u.minor_spacing, minor_line_w);
+        let ly = grid_line(grid_y, u.minor_spacing, minor_line_w);
         minor_alpha = max(lx, ly) * fade_factor * 0.25;
     }
 
     // Major grid lines (10 mm spacing)
-    let mlx = grid_line(wx, u.major_spacing, major_line_w);
-    let mly = grid_line(wy, u.major_spacing, major_line_w);
+    let mlx = grid_line(grid_x, u.major_spacing, major_line_w);
+    let mly = grid_line(grid_y, u.major_spacing, major_line_w);
     let major_fade = clamp((px_per_mm * u.major_spacing - 3.0) / 10.0, 0.0, 1.0);
     let major_alpha = max(mlx, mly) * 0.55 * major_fade;
 
     // Origin axes (stronger)
     let origin_w = 2.0 / px_per_mm;
-    let ax = grid_line(wy, 1e9, origin_w) * u.show_axes;  // X axis (y == 0)
-    let ay = grid_line(wx, 1e9, origin_w) * u.show_axes;  // Y axis (x == 0)
+    let ax = grid_line(grid_y, 1e9, origin_w) * u.show_axes;  // X axis (stock Y origin)
+    let ay = grid_line(grid_x, 1e9, origin_w) * u.show_axes;  // Y axis (stock X origin)
 
     // Compose colours
     let minor_col  = vec4(0.3, 0.3, 0.4, minor_alpha);

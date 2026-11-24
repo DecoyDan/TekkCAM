@@ -8,7 +8,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
     let viewport_bg = if app.ui_state.theme == crate::app::AppTheme::Light {
         egui::Color32::from_rgb(250, 250, 250)
     } else {
-        egui::Color32::from_rgb(10, 10, 15)
+        crate::ui::palette::MYSTERIOUS_DEPTHS
     };
     egui::CentralPanel::default()
         .frame(egui::Frame::new().fill(viewport_bg))
@@ -18,6 +18,11 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
 
             if !app.has_active_project() {
                 show_project_welcome(ui, app, rect);
+                return;
+            }
+
+            if app.project.models.is_empty() && app.project.layers.is_empty() {
+                show_empty_workspace(ui, app, rect);
                 return;
             }
 
@@ -50,6 +55,10 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                 ViewportCallback {
                     camera: app.camera.clone(),
                     show_grid: app.ui_state.show_grid && !app.ui_state.show_3d_view,
+                    grid_origin_mm: [
+                        app.project.setup.stock_origin_mm[0] as f32,
+                        app.project.setup.stock_origin_mm[1] as f32,
+                    ],
                     viewport_size: [rect.width(), rect.height()],
                     scene: app.scene.clone(),
                 },
@@ -209,7 +218,7 @@ fn show_simulation_controls(ctx: &egui::Context, app: &mut TekkCamApp) {
 
 fn show_stock_render_controls(ctx: &egui::Context, app: &mut TekkCamApp, viewport: egui::Rect) {
     egui::Area::new(egui::Id::new("stock_render_controls"))
-        .order(egui::Order::Foreground)
+        .order(egui::Order::Middle)
         .fixed_pos(egui::pos2(viewport.left() + 12.0, viewport.bottom() - 12.0))
         .pivot(egui::Align2::LEFT_BOTTOM)
         .show(ctx, |ui| {
@@ -283,7 +292,7 @@ fn show_simulation_dro(ctx: &egui::Context, ui: &egui::Ui, app: &TekkCamApp, vie
             viewport.left() + 8.0,
             viewport.top() + 30.0 - (1.0 - animation) * 58.0,
         ),
-        egui::vec2(300.0, 52.0),
+        egui::vec2(300.0, 44.0),
     );
     let painter = ui.painter_at(viewport);
     painter.rect_filled(
@@ -326,9 +335,9 @@ fn show_simulation_dro(ctx: &egui::Context, ui: &egui::Ui, app: &TekkCamApp, vie
 }
 
 fn show_view_cube(ui: &mut egui::Ui, app: &mut TekkCamApp, viewport: egui::Rect) {
-    let side = 30.0;
-    let scale = 22.0;
-    let center = egui::pos2(viewport.right() - 48.0, viewport.top() + 70.0);
+    let side = 38.0;
+    let scale = 29.0;
+    let center = egui::pos2(viewport.right() - 78.0, viewport.top() + 82.0);
     let yaw = std::f32::consts::FRAC_PI_4 + app.ui_state.model_orbit[0];
     let pitch = (35.264_f32.to_radians() + app.ui_state.model_orbit[1]).clamp(-1.52, 1.52);
     let (sy, cy) = yaw.sin_cos();
@@ -355,7 +364,7 @@ fn show_view_cube(ui: &mut egui::Ui, app: &mut TekkCamApp, viewport: egui::Rect)
                 [1.0, 1.0, 1.0],
                 [-1.0, 1.0, 1.0],
             ],
-            egui::Color32::from_rgb(83, 112, 156),
+            egui::Color32::from_rgb(62, 62, 68),
             [0.0, 0.0, 1.0],
         ),
         (
@@ -367,7 +376,7 @@ fn show_view_cube(ui: &mut egui::Ui, app: &mut TekkCamApp, viewport: egui::Rect)
                 [1.0, -1.0, -1.0],
                 [-1.0, -1.0, -1.0],
             ],
-            egui::Color32::from_rgb(58, 68, 86),
+            egui::Color32::from_rgb(45, 45, 50),
             [0.0, 0.0, -1.0],
         ),
         (
@@ -379,7 +388,7 @@ fn show_view_cube(ui: &mut egui::Ui, app: &mut TekkCamApp, viewport: egui::Rect)
                 [1.0, 1.0, 1.0],
                 [-1.0, 1.0, 1.0],
             ],
-            egui::Color32::from_rgb(71, 128, 190),
+            egui::Color32::from_rgb(78, 78, 84),
             [0.0, 1.0, 0.0],
         ),
         (
@@ -391,7 +400,7 @@ fn show_view_cube(ui: &mut egui::Ui, app: &mut TekkCamApp, viewport: egui::Rect)
                 [-1.0, -1.0, 1.0],
                 [1.0, -1.0, 1.0],
             ],
-            egui::Color32::from_rgb(55, 91, 132),
+            egui::Color32::from_rgb(57, 57, 63),
             [0.0, -1.0, 0.0],
         ),
         (
@@ -403,7 +412,7 @@ fn show_view_cube(ui: &mut egui::Ui, app: &mut TekkCamApp, viewport: egui::Rect)
                 [1.0, -1.0, 1.0],
                 [1.0, 1.0, 1.0],
             ],
-            egui::Color32::from_rgb(90, 151, 198),
+            egui::Color32::from_rgb(86, 86, 92),
             [1.0, 0.0, 0.0],
         ),
         (
@@ -415,7 +424,7 @@ fn show_view_cube(ui: &mut egui::Ui, app: &mut TekkCamApp, viewport: egui::Rect)
                 [-1.0, 1.0, 1.0],
                 [-1.0, -1.0, 1.0],
             ],
-            egui::Color32::from_rgb(62, 106, 151),
+            egui::Color32::from_rgb(68, 68, 74),
             [-1.0, 0.0, 0.0],
         ),
     ];
@@ -435,7 +444,7 @@ fn show_view_cube(ui: &mut egui::Ui, app: &mut TekkCamApp, viewport: egui::Rect)
         };
         avg_depth(a).total_cmp(&avg_depth(b))
     });
-    let cube_rect = egui::Rect::from_center_size(center, egui::vec2(side * 2.4, side * 2.4));
+    let cube_rect = egui::Rect::from_center_size(center, egui::vec2(side * 2.8, side * 2.8));
     let response = ui.interact(
         cube_rect,
         egui::Id::new("viewport_view_cube"),
@@ -448,14 +457,49 @@ fn show_view_cube(ui: &mut egui::Ui, app: &mut TekkCamApp, viewport: egui::Rect)
         painter.add(egui::Shape::convex_polygon(
             points,
             *color,
-            egui::Stroke::new(1.2_f32, egui::Color32::from_rgb(205, 218, 238)),
+            egui::Stroke::new(1.4_f32, egui::Color32::from_rgb(35, 35, 40)),
         ));
         painter.text(
             face_center,
             egui::Align2::CENTER_CENTER,
             *label,
-            egui::FontId::proportional(8.5),
-            egui::Color32::WHITE,
+            egui::FontId::proportional(11.0),
+            egui::Color32::from_rgb(228, 228, 232),
+        );
+    }
+    let axis_origin = [-1.0, -1.0, -1.0];
+    let axes = [
+        ("X", [1.0, 0.0, 0.0], egui::Color32::from_rgb(245, 62, 72)),
+        ("Y", [0.0, 1.0, 0.0], egui::Color32::from_rgb(90, 220, 74)),
+        ("Z", [0.0, 0.0, 1.0], egui::Color32::from_rgb(52, 145, 255)),
+    ];
+    for (label, direction, color) in axes {
+        let tip = project([
+            axis_origin[0] + direction[0] * 3.0,
+            axis_origin[1] + direction[1] * 3.0,
+            axis_origin[2] + direction[2] * 3.0,
+        ]);
+        let origin = project(axis_origin);
+        let vector = tip - origin;
+        let length = vector.length();
+        if length <= f32::EPSILON {
+            continue;
+        }
+        let unit = vector / length;
+        let arrow_base = tip - unit * 7.0;
+        let perpendicular = egui::vec2(-unit.y, unit.x) * 3.5;
+        painter.line_segment([origin, tip], egui::Stroke::new(2.4_f32, color));
+        painter.add(egui::Shape::convex_polygon(
+            vec![tip, arrow_base + perpendicular, arrow_base - perpendicular],
+            color,
+            egui::Stroke::NONE,
+        ));
+        painter.text(
+            tip + unit * 9.0,
+            egui::Align2::CENTER_CENTER,
+            label,
+            egui::FontId::proportional(12.0),
+            color,
         );
     }
     if response.clicked() {
@@ -487,22 +531,22 @@ fn show_view_cube(ui: &mut egui::Ui, app: &mut TekkCamApp, viewport: egui::Rect)
 fn show_project_welcome(ui: &mut egui::Ui, app: &mut TekkCamApp, rect: egui::Rect) {
     let dark = app.ui_state.theme == crate::app::AppTheme::Dark;
     let panel = if dark {
-        egui::Color32::from_rgb(20, 21, 29)
+        crate::ui::palette::CHARCOAL_SURFACE
     } else {
         egui::Color32::from_rgb(242, 243, 249)
     };
     let border = if dark {
-        egui::Color32::from_rgb(48, 50, 64)
+        crate::ui::palette::SURF_THE_WEB
     } else {
         egui::Color32::from_rgb(211, 213, 226)
     };
     let muted = if dark {
-        egui::Color32::from_rgb(153, 158, 177)
+        egui::Color32::from_rgb(166, 165, 205)
     } else {
         egui::Color32::from_rgb(103, 107, 128)
     };
     let heading = if dark {
-        egui::Color32::from_rgb(235, 237, 245)
+        egui::Color32::from_rgb(243, 241, 255)
     } else {
         egui::Color32::from_rgb(37, 39, 53)
     };
@@ -566,6 +610,121 @@ fn show_project_welcome(ui: &mut egui::Ui, app: &mut TekkCamApp, rect: egui::Rec
                 });
             });
     });
+}
+
+fn show_empty_workspace(ui: &mut egui::Ui, app: &mut TekkCamApp, rect: egui::Rect) {
+    let dark = app.ui_state.theme == crate::app::AppTheme::Dark;
+    let card = if dark {
+        crate::ui::palette::CHARCOAL_SURFACE
+    } else {
+        egui::Color32::from_rgb(242, 243, 249)
+    };
+    let border = if dark {
+        crate::ui::palette::SURF_THE_WEB
+    } else {
+        egui::Color32::from_rgb(211, 213, 226)
+    };
+    let heading = if dark {
+        egui::Color32::from_rgb(243, 241, 255)
+    } else {
+        egui::Color32::from_rgb(37, 39, 53)
+    };
+    let muted = if dark {
+        egui::Color32::from_rgb(166, 165, 205)
+    } else {
+        egui::Color32::from_rgb(103, 107, 128)
+    };
+    let width = rect.width().min(620.0).max(320.0);
+    let height = 316.0_f32.min(rect.height().max(270.0));
+    let card_rect = egui::Rect::from_center_size(rect.center(), egui::vec2(width, height));
+
+    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(card_rect), |ui| {
+        egui::Frame::new()
+            .fill(card)
+            .stroke(egui::Stroke::new(1.0_f32, border))
+            .corner_radius(egui::CornerRadius::same(16))
+            .inner_margin(egui::Margin::same(28))
+            .show(ui, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new("Bring in a design to get started")
+                            .size(25.0)
+                            .strong()
+                            .color(heading),
+                    );
+                    ui.add_space(8.0);
+                    ui.label(
+                        egui::RichText::new(
+                            "Import a drawing or 3D model. Then add a toolpath, review it, and export your G-code.",
+                        )
+                        .size(14.0)
+                        .color(muted),
+                    );
+                    ui.add_space(18.0);
+                    if import_design_button(ui, dark).clicked() {
+                        app.request_open_dialog(ui.ctx());
+                    }
+                    ui.add_space(20.0);
+                    ui.separator();
+                    ui.add_space(12.0);
+                    for (number, title, detail) in [
+                        ("1", "Import", "DXF, SVG, Gerber, drill, or STEP"),
+                        ("2", "Create a toolpath", "Choose an operation and cutting tool"),
+                        ("3", "Review and export", "Simulate the path, then export G-code"),
+                    ] {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(number)
+                                    .size(13.0)
+                                    .strong()
+                                    .color(if dark {
+                                        crate::ui::palette::FISHY_HOUSE
+                                    } else {
+                                        crate::ui::palette::LIGHT_ACCENT_BLUE
+                                    }),
+                            );
+                            ui.label(egui::RichText::new(title).strong().color(heading));
+                            ui.label(egui::RichText::new(detail).color(muted));
+                        });
+                        ui.add_space(5.0);
+                    }
+                });
+            });
+    });
+}
+
+fn import_design_button(ui: &mut egui::Ui, dark: bool) -> egui::Response {
+    let button_width = ui.available_width().min(160.0);
+    let fill = if dark {
+        crate::ui::palette::SWISS_PLUM
+    } else {
+        egui::Color32::from_rgb(63, 119, 224)
+    };
+    let response = ui
+        .add_sized(
+            [button_width, 44.0],
+            egui::Button::new("")
+                .fill(fill)
+                .corner_radius(egui::CornerRadius::same(9)),
+        )
+        .on_hover_text("Choose a design or 3D model to import");
+    let center = response.rect.center();
+    ui.painter().text(
+        center + egui::vec2(-25.0, 0.0),
+        egui::Align2::CENTER_CENTER,
+        '\u{F019}',
+        egui::FontId::new(15.0, egui::FontFamily::Name("download_icon".into())),
+        egui::Color32::WHITE,
+    );
+    ui.painter().text(
+        center + egui::vec2(12.0, 0.0),
+        egui::Align2::CENTER_CENTER,
+        "Import",
+        egui::FontId::new(15.0, egui::FontFamily::Proportional),
+        egui::Color32::WHITE,
+    );
+    response
 }
 
 #[derive(Clone, Copy)]
@@ -709,14 +868,10 @@ fn show_zoom_controls(ctx: &egui::Context, app: &mut TekkCamApp, rect: egui::Rec
                                 ),
                             ),
                         )
-                        .on_hover_text("Fit model to stock")
+                        .on_hover_text("Fit stock to model")
                         .clicked()
                     {
                         app.ui_state.selected_model = Some(model_index);
-                        app.ui_state.fit_model_rotation_deg = app.project.models[model_index]
-                            .transform
-                            .rotation_degrees
-                            .map(|angle| angle.round() as i16);
                         app.ui_state.show_fit_model_dialog = true;
                     }
                 }
@@ -829,21 +984,6 @@ fn sync_scene(app: &mut TekkCamApp, orbit_preview: bool) {
     }
     sig.push((u64::MAX - 20, true, app.project.setup.axis as u64));
     sig.push((u64::MAX - 4, orbit_preview, 0));
-    if let Some((index, transform)) = app.ui_state.fit_model_preview {
-        sig.push((
-            u64::MAX - 30,
-            true,
-            index as u64 ^ transform.scale.to_bits(),
-        ));
-        for (axis, value) in transform
-            .rotation_degrees
-            .iter()
-            .chain(transform.translation_mm.iter())
-            .enumerate()
-        {
-            sig.push((u64::MAX - 31 - axis as u64, true, value.to_bits()));
-        }
-    }
     sig.push((
         u64::MAX - 1,
         true,
@@ -863,12 +1003,7 @@ fn sync_scene(app: &mut TekkCamApp, orbit_preview: bool) {
     ));
     if sig != app.scene_sig {
         app.scene_revision += 1;
-        let mut models = app.project.models.clone();
-        if let Some((index, transform)) = app.ui_state.fit_model_preview {
-            if let Some(model) = models.get_mut(index) {
-                model.transform = transform;
-            }
-        }
+        let models = app.project.models.clone();
         let selected_face_ids = app
             .ui_state
             .selected_operation
@@ -920,6 +1055,18 @@ fn fit_to_geometry(app: &mut TekkCamApp, size: egui::Vec2) {
             app.camera.fit_bounds(mn, mx, size);
             return;
         }
+    } else {
+        let origin = app.project.setup.stock_origin_mm;
+        let stock_size = app.project.setup.stock_size_mm;
+        app.camera.fit_bounds(
+            [origin[0] as f32, origin[1] as f32],
+            [
+                (origin[0] + stock_size[0]) as f32,
+                (origin[1] + stock_size[1]) as f32,
+            ],
+            size,
+        );
+        return;
     }
     let mut bounds: Option<([f32; 2], [f32; 2])> = None;
     for l in app.project.layers.iter().filter(|l| l.visible) {
@@ -1378,15 +1525,20 @@ fn show_text_placement_outline(ui: &egui::Ui, app: &mut TekkCamApp, viewport: eg
     );
     let bounds = egui::Rect::from_min_max(screen_min, screen_max).expand(5.0);
     let painter = ui.painter_at(viewport);
+    let accent = if app.ui_state.theme == crate::app::AppTheme::Dark {
+        crate::ui::palette::SWISS_PLUM
+    } else {
+        crate::ui::palette::LIGHT_ACCENT_BLUE
+    };
     painter.rect_filled(
         bounds,
         egui::CornerRadius::same(2),
-        egui::Color32::from_rgba_unmultiplied(80, 140, 255, 18),
+        accent.gamma_multiply(0.08),
     );
     painter.rect_stroke(
         bounds,
         egui::CornerRadius::same(2),
-        egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(105, 165, 255)),
+        egui::Stroke::new(1.5_f32, accent),
         egui::StrokeKind::Inside,
     );
     if app
@@ -1401,7 +1553,7 @@ fn show_text_placement_outline(ui: &egui::Ui, app: &mut TekkCamApp, viewport: eg
         painter.rect_stroke(
             handle_rect,
             egui::CornerRadius::same(1),
-            egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(55, 115, 215)),
+            egui::Stroke::new(1.0_f32, accent),
             egui::StrokeKind::Inside,
         );
         let button_pos = egui::pos2(bounds.center().x, bounds.top() - 14.0);

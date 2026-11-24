@@ -29,7 +29,7 @@ pub fn generate_with_setup(
     setup.validate()?;
     let generated: Vec<_> = operations
         .iter()
-        .filter(|op| op.generated && !op.toolpath.is_empty())
+        .filter(|op| op.generated && !op.excluded_from_toolpath && !op.toolpath.is_empty())
         .collect();
     if generated.is_empty() {
         return Err("Generate at least one toolpath first".into());

@@ -1,10 +1,14 @@
 use crate::app::TekkCamApp;
 use eframe::egui;
 
-const ACCENT: egui::Color32 = egui::Color32::from_rgb(80, 140, 255);
 const MUTED: egui::Color32 = egui::Color32::from_rgb(100, 100, 120);
 
 pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
+    let accent = if app.ui_state.theme == crate::app::AppTheme::Dark {
+        crate::ui::palette::SWISS_PLUM
+    } else {
+        crate::ui::palette::LIGHT_ACCENT_BLUE
+    };
     let mut project_changed = false;
     let model_bounds = app
         .ui_state
@@ -21,13 +25,13 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
     let panel_bg = if app.ui_state.theme == crate::app::AppTheme::Light {
         egui::Color32::from_rgb(228, 229, 241)
     } else {
-        egui::Color32::from_rgb(20, 20, 28)
+        crate::ui::palette::MYSTERIOUS_DEPTHS
     };
     egui::SidePanel::right("properties")
         .resizable(true)
-        .default_width(220.0)
-        .min_width(180.0)
-        .max_width(480.0)
+        .default_width(300.0)
+        .min_width(230.0)
+        .max_width(520.0)
         .frame(
             egui::Frame::new()
                 .fill(panel_bg)
@@ -38,6 +42,69 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
             // this, the content's intrinsic width can collapse it after a drag.
             ui.set_min_width(ui.max_rect().width());
 
+            let dark = app.ui_state.theme == crate::app::AppTheme::Dark;
+            let tab_bar_bg = if dark {
+                crate::ui::palette::MYSTERIOUS_DEPTHS
+            } else {
+                egui::Color32::from_rgb(215, 217, 229)
+            };
+            let inactive_text = if dark {
+                egui::Color32::from_rgb(112, 116, 132)
+            } else {
+                egui::Color32::from_rgb(117, 120, 139)
+            };
+            egui::Frame::new()
+                .fill(tab_bar_bg)
+                .corner_radius(egui::CornerRadius::same(9))
+                .inner_margin(egui::Margin::same(3))
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    let tab_width = ui.available_width() * 0.5;
+                    ui.horizontal(|ui| {
+                        for (is_console, label) in
+                            [(false, "Properties"), (true, "Console / G-code")]
+                        {
+                            let active = app.ui_state.show_console == is_console;
+                            let button = egui::Button::new(
+                                egui::RichText::new(label)
+                                    .size(13.0)
+                                    .strong()
+                                    .color(if active {
+                                        egui::Color32::WHITE
+                                    } else {
+                                        inactive_text
+                                    }),
+                            )
+                            .fill(if active {
+                                crate::ui::palette::SWISS_PLUM
+                            } else {
+                                egui::Color32::TRANSPARENT
+                            })
+                            .stroke(egui::Stroke::NONE)
+                            .corner_radius(egui::CornerRadius::same(7));
+                            if ui.add_sized([tab_width, 34.0], button).clicked() {
+                                app.ui_state.show_console = is_console;
+                            }
+                        }
+                    });
+                });
+            ui.separator();
+
+            if app.ui_state.show_console {
+                crate::ui::console::show_in_sidebar(ui, ctx, app);
+                return;
+            }
+
+            if !app.has_properties_content() {
+                ui.add_space(16.0);
+                ui.label(
+                    egui::RichText::new("Select a layer or operation to edit its properties.")
+                        .color(MUTED)
+                        .size(13.0),
+                );
+                return;
+            }
+
             egui::ScrollArea::vertical()
                 .id_salt("properties_content")
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
@@ -46,7 +113,8 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                     // ── Layer properties ──────────────────────────────────────────
                     if let Some(idx) = app.ui_state.selected_layer {
                         if idx < app.project.layers.len() {
-                            ui.collapsing("LAYER PROPERTIES", |ui| {
+                            ui.heading("LAYER PROPERTIES");
+                            ui.vertical(|ui| {
                                 ui.add_space(6.0);
 
                                 let layer = &mut app.project.layers[idx];
@@ -59,7 +127,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                                 prop_row(ui, "Kind", |ui| {
                                     ui.label(
                                         egui::RichText::new(format!("{:?}", layer.kind))
-                                            .color(ACCENT),
+                                            .color(accent),
                                     );
                                 });
 
@@ -94,7 +162,8 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                     if let Some(idx) = app.ui_state.selected_operation {
                         if idx < app.project.operations.len() {
                             let units = app.ui_state.display_units;
-                            ui.collapsing("OPERATION PROPERTIES", |ui| {
+                            ui.heading("OPERATION PROPERTIES");
+                            ui.vertical(|ui| {
                                 ui.add_space(6.0);
 
                                 let op = &mut app.project.operations[idx];
@@ -106,7 +175,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
 
                                 prop_row(ui, "Type", |ui| {
                                     ui.label(
-                                        egui::RichText::new(format!("{:?}", op.kind)).color(ACCENT),
+                                        egui::RichText::new(format!("{:?}", op.kind)).color(accent),
                                     );
                                 });
 
@@ -317,7 +386,8 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                                 }
 
                                 ui.add_space(8.0);
-                                ui.collapsing("TOOL", |ui| {
+                                ui.heading("TOOL");
+                                ui.vertical(|ui| {
                                     ui.add_space(4.0);
 
                                     prop_row(ui, &format!("Diameter ({})", units.label()), |ui| {
@@ -331,20 +401,24 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                                         );
                                     });
 
-                                    prop_row(ui, &format!("Feed ({}/min)", units.label()), |ui| {
-                                        project_changed |= unit_drag(
-                                            ui,
-                                            &mut op.tool.feed_rate_mm_min,
-                                            units,
-                                            1.0,
-                                            10.0,
-                                            5000.0,
-                                        );
-                                    });
+                                    prop_row(
+                                        ui,
+                                        &format!("Cutting Feedrate ({}/min)", units.label()),
+                                        |ui| {
+                                            project_changed |= unit_drag(
+                                                ui,
+                                                &mut op.tool.feed_rate_mm_min,
+                                                units,
+                                                1.0,
+                                                10.0,
+                                                5000.0,
+                                            );
+                                        },
+                                    );
 
                                     prop_row(
                                         ui,
-                                        &format!("Plunge ({}/min)", units.label()),
+                                        &format!("Plunge Feedrate ({}/min)", units.label()),
                                         |ui| {
                                             project_changed |= unit_drag(
                                                 ui,
@@ -357,7 +431,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                                         },
                                     );
 
-                                    prop_row(ui, "Spindle (RPM)", |ui| {
+                                    prop_row(ui, "Spindle Speed (RPM)", |ui| {
                                         project_changed |= ui
                                             .add(
                                                 egui::DragValue::new(&mut op.tool.spindle_rpm)
@@ -404,7 +478,8 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                                 });
 
                                 ui.add_space(8.0);
-                                ui.collapsing("CUT PARAMETERS", |ui| {
+                                ui.heading("CUT PARAMETERS");
+                                ui.vertical(|ui| {
                                     ui.add_space(4.0);
 
                                     let is_roughing = matches!(
@@ -429,7 +504,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                                     } else {
                                         prop_row(
                                             ui,
-                                            &format!("Depth/Pass ({})", units.label()),
+                                            &format!("Maximum Stepdown ({})", units.label()),
                                             |ui| {
                                                 project_changed |= unit_drag(
                                                     ui,
@@ -444,7 +519,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
 
                                         prop_row(
                                             ui,
-                                            &format!("Total Depth ({})", units.label()),
+                                            &format!("Cut Depth ({})", units.label()),
                                             |ui| {
                                                 project_changed |= unit_drag(
                                                     ui,
@@ -459,11 +534,11 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                                     }
 
                                     let margin_label = if is_roughing {
-                                        "Roughing allowance"
+                                        "Stock to Leave"
                                     } else if is_3d_machining {
-                                        "Finishing allowance"
+                                        "Stock to Leave"
                                     } else {
-                                        "Margin"
+                                        "Stock to Leave"
                                     };
                                     prop_row(
                                         ui,
@@ -496,7 +571,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                                         });
                                     }
                                     if op.kind == Kind::Pocket {
-                                        prop_row(ui, "Stepover (x tool dia.)", |ui| {
+                                        prop_row(ui, "Stepover (% of tool diameter)", |ui| {
                                             project_changed |= ui
                                                 .add(
                                                     egui::DragValue::new(&mut op.stepover_ratio)
@@ -509,7 +584,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                                     if op.kind == Kind::Drill {
                                         prop_row(
                                             ui,
-                                            &format!("Peck depth ({})", units.label()),
+                                            &format!("Pecking Depth ({})", units.label()),
                                             |ui| {
                                                 project_changed |= unit_drag(
                                                     ui,
@@ -549,7 +624,13 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                                 let btn = egui::Button::new(
                                     egui::RichText::new(button_text).color(egui::Color32::WHITE),
                                 )
-                                .fill(egui::Color32::from_rgb(50, 100, 200));
+                                .fill(
+                                    if app.ui_state.theme == crate::app::AppTheme::Dark {
+                                        crate::ui::palette::SWISS_PLUM
+                                    } else {
+                                        egui::Color32::from_rgb(50, 100, 200)
+                                    },
+                                );
 
                                 if ui
                                     .add_enabled_ui(!app.generation_pending, |ui| {
@@ -599,7 +680,6 @@ pub fn show_fit_model_dialog(ctx: &egui::Context, app: &mut TekkCamApp) {
         .or_else(|| app.project.models.iter().position(|model| model.visible));
     let Some(model_index) = model_index else {
         app.ui_state.show_fit_model_dialog = false;
-        app.ui_state.fit_model_preview = None;
         return;
     };
     let tool_clearance = app
@@ -612,68 +692,37 @@ pub fn show_fit_model_dialog(ctx: &egui::Context, app: &mut TekkCamApp) {
                 + app.project.default_tool.holder_clearance_mm,
             f64::max,
         );
-    let rotation_degrees = app.ui_state.fit_model_rotation_deg.map(f64::from);
-    let preview = app.project.models[model_index].fit_to_stock(
-        &app.project.setup,
-        tool_clearance,
-        rotation_degrees,
-    );
+    let preview =
+        app.project.models[model_index].stock_envelope(&app.project.setup, tool_clearance);
     let mut open = true;
     let mut apply = false;
     let mut cancel = false;
-    egui::Window::new("Fit model to stock")
-        .id(egui::Id::new("fit_model_to_stock_dialog"))
+    egui::Window::new("Fit stock to model")
+        .id(egui::Id::new("fit_stock_to_model_dialog"))
         .collapsible(false)
         .resizable(false)
         .open(&mut open)
         .show(ctx, |ui| {
-            ui.label("The stock dimensions will stay unchanged.");
-            ui.horizontal(|ui| {
-                ui.label("Orientation");
-                for (axis, label) in ["X", "Y", "Z"].into_iter().enumerate() {
-                    egui::ComboBox::from_id_salt(("fit_model_rotation", axis))
-                        .selected_text(format!(
-                            "{label} {}°",
-                            app.ui_state.fit_model_rotation_deg[axis]
-                        ))
-                        .show_ui(ui, |ui| {
-                            for angle in [-180, -90, 0, 90, 180] {
-                                ui.selectable_value(
-                                    &mut app.ui_state.fit_model_rotation_deg[axis],
-                                    angle,
-                                    format!("{angle}°"),
-                                );
-                            }
-                        });
-                }
-            });
+            ui.label("The model’s scale, orientation, and position will stay unchanged.");
             match &preview {
-                Ok(fit) => {
+                Ok(envelope) => {
                     let units = app.ui_state.display_units;
                     let factor = units.factor();
-                    let size = std::array::from_fn::<_, 3, _>(|axis| {
-                        fit.bounds[1][axis] as f64 - fit.bounds[0][axis] as f64
-                    });
-                    ui.label(format!("Uniform scale: {:.4}×", fit.scale));
+                    let size = envelope.stock_size_mm;
                     ui.label(format!(
-                        "Rotation: X {:.0}° · Y {:.0}° · Z {:.0}°",
-                        fit.rotation_degrees[0], fit.rotation_degrees[1], fit.rotation_degrees[2]
-                    ));
-                    ui.label(format!(
-                        "Resulting model: {:.2} × {:.2} × {:.2} {}",
+                        "New stock size: {:.2} × {:.2} × {:.2} {}",
                         size[0] / factor,
                         size[1] / factor,
                         size[2] / factor,
                         units.label()
                     ));
                     ui.label(format!(
-                        "XY tool clearance: {:.2} {} · Z margin: {:.2} {}",
-                        fit.xy_margin_mm / factor,
+                        "XY clearance: {:.2} {} · Z margin: {:.2} {}",
+                        envelope.xy_margin_mm / factor,
                         units.label(),
-                        fit.z_margin_mm / factor,
+                        envelope.z_margin_mm / factor,
                         units.label()
                     ));
-                    ui.label("Centered in XY; model top aligned to the stock top face.");
                 }
                 Err(error) => {
                     ui.colored_label(egui::Color32::from_rgb(220, 80, 80), error);
@@ -682,7 +731,7 @@ pub fn show_fit_model_dialog(ctx: &egui::Context, app: &mut TekkCamApp) {
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if ui
-                    .add_enabled(preview.is_ok(), egui::Button::new("Apply fit"))
+                    .add_enabled(preview.is_ok(), egui::Button::new("Apply stock size"))
                     .clicked()
                 {
                     apply = true;
@@ -696,33 +745,15 @@ pub fn show_fit_model_dialog(ctx: &egui::Context, app: &mut TekkCamApp) {
         open = false;
     }
     app.ui_state.show_fit_model_dialog = open;
-    app.ui_state.fit_model_preview = if open && !apply {
-        preview.as_ref().ok().map(|fit| {
-            (
-                model_index,
-                crate::workspace::model::ModelTransform {
-                    scale: fit.scale,
-                    rotation_degrees: fit.rotation_degrees,
-                    translation_mm: fit.translation_mm,
-                },
-            )
-        })
-    } else {
-        None
-    };
     if apply {
-        if let Ok(fit) = preview {
-            app.project.models[model_index].transform = crate::workspace::model::ModelTransform {
-                scale: fit.scale,
-                rotation_degrees: fit.rotation_degrees,
-                translation_mm: fit.translation_mm,
-            };
+        if let Ok(envelope) = preview {
+            app.project.setup.stock_origin_mm = envelope.stock_origin_mm;
+            app.project.setup.stock_size_mm = envelope.stock_size_mm;
             invalidate_model_toolpaths(app);
             app.ui_state.project_dirty = true;
             app.ui_state.request_fit = true;
             app.scene_sig.clear();
             app.ui_state.show_fit_model_dialog = false;
-            app.ui_state.fit_model_preview = None;
         }
     }
 }
@@ -741,8 +772,7 @@ fn invalidate_model_toolpaths(app: &mut TekkCamApp) {
             operation.toolpath = Default::default();
         }
     }
-    app.ui_state.gcode_text.clear();
-    app.ui_state.simulation_moves.clear();
+    app.invalidate_gcode_and_simulation();
 }
 
 pub fn show_tool_database_dialog(ctx: &egui::Context, app: &mut TekkCamApp) {
@@ -930,17 +960,17 @@ pub fn show_setup_dialog(ctx: &egui::Context, app: &mut TekkCamApp) {
                             }
                         }
                         for (label, value) in [
-                            ("Safe Z", &mut setup.safe_z_mm),
-                            ("Clearance", &mut setup.clearance_mm),
-                            ("Boundary margin", &mut setup.boundary_margin_mm),
-                            ("Stepdown", &mut setup.stepdown_mm),
-                            ("Chip load", &mut setup.chip_load_mm),
+                            ("Safe Z Height", &mut setup.safe_z_mm),
+                            ("Clearance Height", &mut setup.clearance_mm),
+                            ("Boundary Offset", &mut setup.boundary_margin_mm),
+                            ("Maximum Stepdown", &mut setup.stepdown_mm),
+                            ("Feed per Tooth", &mut setup.chip_load_mm),
                         ] {
                             prop_row(ui, &format!("{} ({})", label, units.label()), |ui| {
                                 changed |= unit_drag(ui, value, units, 0.1, 0.0, 500.0)
                             });
                         }
-                        prop_row(ui, "Stepover (%)", |ui| {
+                        prop_row(ui, "Stepover (% of tool diameter)", |ui| {
                             changed |= ui
                                 .add(
                                     egui::DragValue::new(&mut setup.stepover_percent)
@@ -1679,9 +1709,9 @@ pub fn show_tool_editor(ctx: &egui::Context, app: &mut TekkCamApp) {
                     ("Stickout", &mut tool.stickout_mm, false),
                     ("Corner radius", &mut tool.corner_radius_mm, false),
                     ("Holder clearance", &mut tool.holder_clearance_mm, false),
-                    ("Feed rate", &mut tool.feed_rate_mm_min, true),
-                    ("Plunge rate", &mut tool.plunge_rate_mm_min, true),
-                    ("Spindle speed (RPM)", &mut tool.spindle_rpm, false),
+                    ("Cutting Feedrate", &mut tool.feed_rate_mm_min, true),
+                    ("Plunge Feedrate", &mut tool.plunge_rate_mm_min, true),
+                    ("Spindle Speed (RPM)", &mut tool.spindle_rpm, false),
                 ] {
                     let is_spindle = label.starts_with("Spindle");
                     ui.label(if is_spindle {

@@ -13,7 +13,7 @@ struct GridUniforms {
     /// World-space grid spacing (major / minor)
     minor_spacing: f32,
     major_spacing: f32,
-    _pad2: [f32; 2],
+    grid_origin_mm: [f32; 2],
 }
 
 /// GPU resources for infinite grid rendering.
@@ -114,6 +114,7 @@ impl GridRenderer {
         camera: &Camera2D,
         viewport_size: [f32; 2],
         show_axes: bool,
+        grid_origin_mm: [f32; 2],
     ) {
         let vp_w = viewport_size[0].max(1.0);
         let vp_h = viewport_size[1].max(1.0);
@@ -132,7 +133,7 @@ impl GridRenderer {
             show_axes: if show_axes { 1.0 } else { 0.0 },
             minor_spacing,
             major_spacing,
-            _pad2: [0.0; 2],
+            grid_origin_mm,
         };
 
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
