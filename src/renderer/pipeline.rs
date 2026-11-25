@@ -391,28 +391,44 @@ impl Scene {
             );
         }
         if view_3d {
-            if let Some(model) = models.iter().find(|model| model.visible) {
-                let extent = (0..3)
-                    .map(|axis| {
-                        let bounds = model.transformed_bounds();
-                        (bounds[1][axis] - bounds[0][axis]).abs()
-                    })
-                    .fold(1.0_f32, f32::max)
-                    * 0.6;
-                for (end, color) in [
-                    ([extent, 0.0, 0.0], [0.95, 0.3, 0.3, 1.0]),
-                    ([0.0, extent, 0.0], [0.35, 0.85, 0.4, 1.0]),
-                    ([0.0, 0.0, extent], [0.35, 0.6, 1.0, 1.0]),
-                ] {
-                    scene.lines.push(Vertex {
-                        pos: project_point(0.0, 0.0, 0.0, true, orbit),
-                        color,
-                    });
-                    scene.lines.push(Vertex {
-                        pos: project_point(end[0], end[1], end[2], true, orbit),
-                        color,
-                    });
-                }
+            // The axis triad always sits at the centre of the stock's top face,
+            // so it follows the stock when it is resized, moved or fitted to a model.
+            let anchor = stock_top_center(setup);
+            let extent = models
+                .iter()
+                .find(|model| model.visible)
+                .map(|model| {
+                    let bounds = model.transformed_bounds();
+                    (0..3)
+                        .map(|axis| (bounds[1][axis] - bounds[0][axis]).abs())
+                        .fold(1.0_f32, f32::max)
+                })
+                .unwrap_or_else(|| {
+                    setup
+                        .stock_size_mm
+                        .iter()
+                        .fold(1.0_f32, |largest, size| largest.max(*size as f32))
+                })
+                * 0.6;
+            for (direction, color) in [
+                ([1.0_f32, 0.0, 0.0], [0.95, 0.3, 0.3, 1.0]),
+                ([0.0, 1.0, 0.0], [0.35, 0.85, 0.4, 1.0]),
+                ([0.0, 0.0, 1.0], [0.35, 0.6, 1.0, 1.0]),
+            ] {
+                scene.lines.push(Vertex {
+                    pos: project_point(anchor[0], anchor[1], anchor[2], true, orbit),
+                    color,
+                });
+                scene.lines.push(Vertex {
+                    pos: project_point(
+                        anchor[0] + direction[0] * extent,
+                        anchor[1] + direction[1] * extent,
+                        anchor[2] + direction[2] * extent,
+                        true,
+                        orbit,
+                    ),
+                    color,
+                });
             }
         }
         for op in operations
@@ -465,6 +481,21 @@ impl Scene {
                 })
             })
     }
+}
+
+/// Centre of the stock's top face in world coordinates.
+fn stock_top_center(setup: &MachiningSetup) -> [f32; 3] {
+    let origin = setup.stock_origin_mm;
+    let size = setup.stock_size_mm;
+    let top = match setup.axis {
+        WorkAxis::ZUp => origin[2] + size[2],
+        WorkAxis::ZDown => origin[2],
+    };
+    [
+        (origin[0] + size[0] * 0.5) as f32,
+        (origin[1] + size[1] * 0.5) as f32,
+        top as f32,
+    ]
 }
 
 fn append_stock_top_surface(scene: &mut Scene, setup: &MachiningSetup, material: StockMaterial) {
@@ -1051,6 +1082,61 @@ mod tests {
         // Negative CNC Z is below the work plane and projects downward in the view.
         assert!(cut[1] < surface[1]);
         assert_eq!(project_point(4.0, 2.0, -3.0, false, [0.0, 0.0]), [4.0, 2.0]);
+    }
+
+    #[test]
+    fn axis_triad_stays_centered_on_the_stock_top() {
+        let orbit = [0.3, 0.1];
+        let mut setup = MachiningSetup::default();
+        for (origin, size) in [
+            ([0.0, 0.0, 0.0], [100.0, 100.0, 20.0]),
+            ([-40.0, 25.0, -5.0], [300.0, 40.0, 12.0]),
+        ] {
+            setup.stock_origin_mm = origin;
+            setup.stock_size_mm = size;
+            let scene = Scene::build(
+                &[],
+                &[],
+                &[],
+                0,
+                true,
+                orbit,
+                None,
+                &[],
+                false,
+                &setup,
+                false,
+                false,
+                StockMaterial::default(),
+                None,
+            );
+            let top = match setup.axis {
+                WorkAxis::ZUp => origin[2] + size[2],
+                WorkAxis::ZDown => origin[2],
+            };
+            let expected = project_point(
+                (origin[0] + size[0] * 0.5) as f32,
+                (origin[1] + size[1] * 0.5) as f32,
+                top as f32,
+                true,
+                orbit,
+            );
+            // Every axis line starts at the stock-top centre.
+            for color in [
+                [0.95, 0.3, 0.3, 1.0],
+                [0.35, 0.85, 0.4, 1.0],
+                [0.35, 0.6, 1.0, 1.0],
+            ] {
+                let start = scene
+                    .lines
+                    .iter()
+                    .find(|vertex| vertex.color == color)
+                    .expect("axis line present")
+                    .pos;
+                assert!((start[0] - expected[0]).abs() < 1e-3);
+                assert!((start[1] - expected[1]).abs() < 1e-3);
+            }
+        }
     }
 }
 
