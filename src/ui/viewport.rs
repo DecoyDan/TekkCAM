@@ -883,6 +883,8 @@ fn show_zoom_controls(ctx: &egui::Context, app: &mut TekkCamApp, rect: egui::Rec
 }
 
 const ICON_CUBE_OUTLINE: char = '\u{F01A7}';
+/// Material Design "rotate-right" glyph from the bundled Nerd Fonts icon font.
+const ICON_ROTATE_RIGHT: char = '\u{F0467}';
 
 fn is_step_model(source_path: &str) -> bool {
     std::path::Path::new(source_path)
@@ -1132,21 +1134,21 @@ fn handle_camera_input(ui: &mut egui::Ui, app: &mut TekkCamApp, rect: egui::Rect
         .placing_text_layer
         .filter(|&index| app.project.layers.get(index).is_some());
     let primary_down = ui.input(|input| input.pointer.button_down(egui::PointerButton::Primary));
-    if primary_down || response.drag_started_by(egui::PointerButton::Primary) {
+    // Resize handles exist only while a text layer is in its moving state
+    // (rotation is driven by the rotate button drawn with the outline).
+    if (primary_down || response.drag_started_by(egui::PointerButton::Primary))
+        && app.ui_state.text_resize.is_none()
+        && app.ui_state.text_rotate.is_none()
+    {
         if let (Some(index), Some(pointer)) = (
-            app.ui_state
-                .placing_text_layer
-                .or(app.ui_state.selected_layer)
-                .filter(|&index| {
-                    app.project.layers.get(index).is_some_and(|layer| {
-                        layer.visible && layer.kind == crate::workspace::layer::LayerKind::Text
-                    })
-                }),
+            placing_text.filter(|&index| {
+                app.project.layers.get(index).is_some_and(|layer| {
+                    layer.visible && layer.kind == crate::workspace::layer::LayerKind::Text
+                })
+            }),
             response.interact_pointer_pos(),
         ) {
-            if let Some(state) = text_rotate_state_at_pointer(app, index, pointer, rect) {
-                app.ui_state.text_rotate = Some(state);
-            } else if let Some(state) = text_resize_state_at_pointer(app, index, pointer, rect) {
+            if let Some(state) = text_resize_state_at_pointer(app, index, pointer, rect) {
                 app.ui_state.text_resize = Some(state);
             }
         }
@@ -1177,22 +1179,24 @@ fn handle_camera_input(ui: &mut egui::Ui, app: &mut TekkCamApp, rect: egui::Rect
             app.ui_state.status_message = "Text resized".into();
         }
     }
-    if app.ui_state.text_resize.is_some() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
+    if let Some(resize) = &app.ui_state.text_resize {
+        let cursor = resize_cursor(app, resize.initial_handle, resize.anchor, rect);
+        ui.ctx().set_cursor_icon(cursor);
     } else if app.ui_state.text_rotate.is_some() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-    } else if let (Some(index), Some(pointer)) = (
-        app.ui_state.placing_text_layer,
-        ui.input(|input| input.pointer.hover_pos()),
-    ) {
+    } else if let (Some(index), Some(pointer)) =
+        (placing_text, ui.input(|input| input.pointer.hover_pos()))
+    {
         if app
             .project
             .layers
             .get(index)
             .is_some_and(|layer| layer.kind == crate::workspace::layer::LayerKind::Text)
-            && text_resize_state_at_pointer(app, index, pointer, rect).is_some()
         {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
+            if let Some(state) = text_resize_state_at_pointer(app, index, pointer, rect) {
+                let cursor = resize_cursor(app, state.initial_handle, state.anchor, rect);
+                ui.ctx().set_cursor_icon(cursor);
+            }
         }
     }
     let mut text_double_click = false;
@@ -1379,45 +1383,53 @@ fn text_resize_state_at_pointer(
 ) -> Option<crate::app::TextResizeState> {
     let layer = app.project.layers.get(index)?;
     let (min, max) = layer.geometry.bounds()?;
-    let handle_world = [max[0], min[1]];
-    let handle_screen = text_world_to_screen(app, handle_world, viewport);
-    if handle_screen.distance(pointer) > 10.0 {
-        return None;
-    }
+    // Pick the corner handle closest to the pointer; the opposite corner stays
+    // fixed so the layer scales proportionally away from it.
+    let (handle_world, anchor) = text_resize_corners(min, max)
+        .into_iter()
+        .map(|(handle, anchor)| (text_world_to_screen(app, handle, viewport), handle, anchor))
+        .filter(|(screen, _, _)| screen.distance(pointer) <= TEXT_HANDLE_HIT_RADIUS)
+        .min_by(|a, b| {
+            a.0.distance(pointer)
+                .partial_cmp(&b.0.distance(pointer))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(_, handle, anchor)| (handle, anchor))?;
     Some(crate::app::TextResizeState {
         layer_index: index,
         original_geometry: layer.geometry.clone(),
-        anchor: [min[0], max[1]],
+        anchor,
         initial_handle: handle_world,
         original_height_mm: layer.text_data.as_ref().map(|data| data.height_mm),
     })
 }
 
-fn text_rotate_state_at_pointer(
+const TEXT_HANDLE_HIT_RADIUS: f32 = 10.0;
+
+/// Corner handles of a layer's bounds, each paired with the opposite corner.
+fn text_resize_corners(min: [f32; 2], max: [f32; 2]) -> [([f32; 2], [f32; 2]); 4] {
+    [
+        ([min[0], min[1]], [max[0], max[1]]),
+        ([max[0], min[1]], [min[0], max[1]]),
+        ([max[0], max[1]], [min[0], min[1]]),
+        ([min[0], max[1]], [max[0], min[1]]),
+    ]
+}
+
+/// Diagonal resize cursor matching the on-screen direction of a corner handle.
+fn resize_cursor(
     app: &TekkCamApp,
-    index: usize,
-    pointer: egui::Pos2,
+    handle: [f32; 2],
+    anchor: [f32; 2],
     viewport: egui::Rect,
-) -> Option<crate::app::TextRotateState> {
-    let layer = app.project.layers.get(index)?;
-    let (min, max) = layer.geometry.bounds()?;
-    let handle = text_world_to_screen(app, [(min[0] + max[0]) * 0.5, max[1]], viewport)
-        + egui::vec2(0.0, -22.0);
-    if handle.distance(pointer) > 10.0 {
-        return None;
+) -> egui::CursorIcon {
+    let delta =
+        text_world_to_screen(app, handle, viewport) - text_world_to_screen(app, anchor, viewport);
+    if delta.x * delta.y >= 0.0 {
+        egui::CursorIcon::ResizeNwSe
+    } else {
+        egui::CursorIcon::ResizeNeSw
     }
-    let center = [(min[0] + max[0]) * 0.5, (min[1] + max[1]) * 0.5];
-    let cursor = screen_to_text_world(app, pointer, viewport);
-    Some(crate::app::TextRotateState {
-        layer_index: index,
-        original_geometry: layer.geometry.clone(),
-        center,
-        initial_angle: (cursor.y - center[1]).atan2(cursor.x - center[0]),
-        initial_rotation_degrees: layer
-            .text_data
-            .as_ref()
-            .map_or(0.0, |data| data.rotation_degrees),
-    })
 }
 
 fn rotate_text_layer(app: &mut TekkCamApp, rotate: &crate::app::TextRotateState, cursor: [f32; 2]) {
@@ -1547,16 +1559,27 @@ fn show_text_placement_outline(ui: &egui::Ui, app: &mut TekkCamApp, viewport: eg
         .get(index)
         .is_some_and(|layer| layer.kind == crate::workspace::layer::LayerKind::Text)
     {
-        let handle = text_world_to_screen(app, [max[0], min[1]], viewport);
-        let handle_rect = egui::Rect::from_center_size(handle, egui::vec2(8.0, 8.0));
-        painter.rect_filled(handle_rect, 1.0, egui::Color32::WHITE);
-        painter.rect_stroke(
-            handle_rect,
-            egui::CornerRadius::same(1),
-            egui::Stroke::new(1.0_f32, accent),
-            egui::StrokeKind::Inside,
+        // Resize handles on all four corners of the layer bounds.
+        for (corner, _) in text_resize_corners(min, max) {
+            let handle = text_world_to_screen(app, corner, viewport);
+            let handle_rect = egui::Rect::from_center_size(handle, egui::vec2(9.0, 9.0));
+            painter.rect_filled(handle_rect, 1.0, egui::Color32::WHITE);
+            painter.rect_stroke(
+                handle_rect,
+                egui::CornerRadius::same(1),
+                egui::Stroke::new(1.5_f32, accent),
+                egui::StrokeKind::Inside,
+            );
+        }
+        // Rotate button sits above the layer, joined to it by a short stem.
+        painter.line_segment(
+            [
+                egui::pos2(bounds.center().x, bounds.top()),
+                egui::pos2(bounds.center().x, bounds.top() - 12.0),
+            ],
+            egui::Stroke::new(1.5_f32, accent),
         );
-        let button_pos = egui::pos2(bounds.center().x, bounds.top() - 14.0);
+        let button_pos = egui::pos2(bounds.center().x, bounds.top() - 24.0);
         egui::Area::new(egui::Id::new("text_rotate_button"))
             .order(egui::Order::Foreground)
             .fixed_pos(button_pos)
@@ -1565,8 +1588,17 @@ fn show_text_placement_outline(ui: &egui::Ui, app: &mut TekkCamApp, viewport: eg
                 let response = ui
                     .add_sized(
                         egui::vec2(24.0, 24.0),
-                        egui::Button::new(egui::RichText::new("⟳").size(16.0))
-                            .sense(egui::Sense::click_and_drag()),
+                        egui::Button::new(
+                            egui::RichText::new(ICON_ROTATE_RIGHT.to_string())
+                                .font(egui::FontId::new(
+                                    16.0,
+                                    egui::FontFamily::Name("sidebar_icons".into()),
+                                ))
+                                .color(egui::Color32::WHITE),
+                        )
+                        .fill(accent)
+                        .corner_radius(egui::CornerRadius::same(12))
+                        .sense(egui::Sense::click_and_drag()),
                     )
                     .on_hover_cursor(egui::CursorIcon::Grab)
                     .on_hover_text("Drag to rotate text");
