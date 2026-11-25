@@ -1,5 +1,6 @@
 pub mod console;
 pub mod machine;
+pub mod orientation_preview;
 pub mod palette;
 pub mod properties;
 pub mod settings;

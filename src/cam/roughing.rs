@@ -1,3 +1,4 @@
+use crate::accel::{Probe, ProbeEngine};
 use crate::{
     cam::{tool::Tool, toolpath::Toolpath},
     workspace::{
@@ -250,6 +251,10 @@ pub fn generate(
 
     let safe_z = stock_max[2] + setup.clearance_mm + setup.safe_z_mm;
     let query = MeshQuery::new(model);
+    // Answers the cutter-access and gouge/holder probes on the GPU when there is
+    // one, and on all CPU cores otherwise; the answers are the same.
+    let engine = ProbeEngine::new(&query);
+    let tool_radius = tool.diameter_mm * 0.5;
     let mut path = Toolpath::default();
     let mut z = stock_max[2];
     let mut pass_count = 0usize;
@@ -258,7 +263,31 @@ pub fn generate(
         if pass_count > MAX_DEPTH_PASSES {
             return Err("roughing needs too many depth passes; increase stepdown".into());
         }
+        // Which raster points can the cutter reach at this depth? One batch per
+        // level instead of one mesh query per point.
+        let reachable = {
+            let mut probes = Vec::with_capacity(rows * columns);
+            let mut slots = Vec::with_capacity(rows * columns);
+            for row in 0..rows {
+                let y = y_min + row as f64 * stepover;
+                for column in 0..columns {
+                    let x = x_min + column as f64 * stepover;
+                    if !rest_mask.is_some_and(|mask| mask.is_cleared(x, y)) {
+                        slots.push(row * columns + column);
+                        probes.push(Probe::cutter(x, y, z - allowance_mm, tool_radius, 0.0));
+                    }
+                }
+            }
+            let answers = engine.fits(&probes);
+            crate::cam::cancel::check()?;
+            let mut reachable = vec![false; rows * columns];
+            for (slot, answer) in slots.into_iter().zip(answers) {
+                reachable[slot] = answer;
+            }
+            reachable
+        };
         for row in 0..rows {
+            crate::cam::cancel::check()?;
             let y = y_min + row as f64 * stepover;
             let left_to_right = row % 2 == 0;
             let mut run = Vec::new();
@@ -269,9 +298,7 @@ pub fn generate(
                     columns - 1 - column
                 };
                 let x = x_min + column as f64 * stepover;
-                let accessible = !rest_mask.is_some_and(|mask| mask.is_cleared(x, y))
-                    && query.cutter_accessible(x, y, z - allowance_mm, tool.diameter_mm * 0.5, 0.0);
-                if accessible {
+                if reachable[row * columns + column] {
                     run.push([x, y]);
                 } else {
                     append_run(
@@ -302,7 +329,7 @@ pub fn generate(
     }
     path.simplify_feed_runs(setup.path_tolerance_mm)?;
     validate_rapid_clearance(&path, stock_max[2] + setup.clearance_mm)?;
-    validate_cutting_segments(&path, &query, tool, setup)?;
+    validate_cutting_segments(&path, &engine, tool, setup)?;
     Ok(path)
 }
 
@@ -316,9 +343,13 @@ fn validate_rapid_clearance(path: &Toolpath, minimum_z: f64) -> Result<(), Strin
 /// Densely samples generated cutting segments against the imported tessellation.
 /// This catches missed collisions between raster samples, but remains an
 /// approximation because both the STEP mesh and cutter envelope are sampled.
-fn validate_cutting_segments(
+///
+/// Every sample becomes two probes (cutter access, then holder envelope) that are
+/// answered in one batch; the first failing probe, in path order, decides the
+/// error, exactly as if the samples had been tested one by one.
+pub(crate) fn validate_cutting_segments(
     path: &Toolpath,
-    query: &MeshQuery<'_>,
+    engine: &ProbeEngine<'_>,
     tool: &Tool,
     setup: &MachiningSetup,
 ) -> Result<(), String> {
@@ -326,7 +357,15 @@ fn validate_cutting_segments(
 
     let mut position: Option<[f64; 3]> = None;
     let tool_radius = tool.diameter_mm * 0.5;
+    let holder_radius = tool_radius + tool.holder_clearance_mm;
+    let spacing = crate::cam::toolpath::check_spacing(
+        setup.path_tolerance_mm,
+        tool_radius,
+        path.feed_length_mm(),
+    );
+    let mut probes = Vec::new();
     for movement in &path.moves {
+        crate::cam::cancel::check()?;
         match movement {
             ToolMove::Rapid { to, z } => position = Some([to[0], to[1], *z]),
             ToolMove::Feed { to, z, .. } => {
@@ -336,7 +375,6 @@ fn validate_cutting_segments(
                         + (end[1] - start[1]).powi(2)
                         + (end[2] - start[2]).powi(2))
                     .sqrt();
-                    let spacing = setup.path_tolerance_mm.min((tool_radius * 0.25).max(0.01));
                     let samples = (distance / spacing).ceil().max(1.0) as usize;
                     for step in 0..=samples {
                         let t = step as f64 / samples as f64;
@@ -345,39 +383,49 @@ fn validate_cutting_segments(
                             start[1] + (end[1] - start[1]) * t,
                             start[2] + (end[2] - start[2]) * t,
                         ];
-                        if !query.cutter_accessible(
+                        probes.push(Probe::cutter(
                             point[0],
                             point[1],
                             point[2],
                             tool_radius,
                             setup.chordal_tolerance_mm,
-                        ) {
-                            return Err(
-                                "approximate gouge check failed along a roughing move".into()
-                            );
-                        }
-                        let holder_radius = tool_radius + tool.holder_clearance_mm;
-                        let holder_bottom = point[2] + tool.flute_length_mm;
-                        for sample in 0..9 {
-                            let angle = sample as f64 * std::f64::consts::TAU / 9.0;
-                            let sx = point[0] + holder_radius * angle.cos();
-                            let sy = point[1] + holder_radius * angle.sin();
-                            if query
-                                .height_at_xy(sx, sy)
-                                .is_some_and(|surface| surface.height > holder_bottom + 1e-6)
-                            {
-                                return Err(
-                                    "approximate holder collision detected along a roughing move"
-                                        .into(),
-                                );
-                            }
-                        }
+                        ));
+                        probes.push(Probe::ring(
+                            point[0],
+                            point[1],
+                            point[2] + tool.flute_length_mm + 1e-6,
+                            holder_radius,
+                            9,
+                        ));
                     }
                 }
                 position = Some([to[0], to[1], *z]);
             }
             ToolMove::Arc { to, z, .. } => position = Some([to[0], to[1], *z]),
             ToolMove::Drill { at, depth, .. } => position = Some([at[0], at[1], *depth]),
+        }
+    }
+    let answers = engine.fits(&probes);
+    crate::cam::cancel::check()?;
+    for (index, fits) in answers.iter().enumerate() {
+        if !fits {
+            let probe = &probes[index];
+            let place = format!(
+                "near X{:.2} Y{:.2} Z{:.2}",
+                probe.x,
+                probe.y,
+                probe.limit
+                    - if index % 2 == 0 {
+                        setup.chordal_tolerance_mm
+                    } else {
+                        tool.flute_length_mm + 1e-6
+                    }
+            );
+            return Err(if index % 2 == 0 {
+                format!("approximate gouge check failed along a roughing move {place}")
+            } else {
+                format!("approximate holder collision detected along a roughing move {place}")
+            });
         }
     }
     Ok(())

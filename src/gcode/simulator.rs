@@ -1,5 +1,23 @@
 use crate::cam::toolpath::ToolMove;
 
+/// A run of simulation moves made by one operation, with the tool it uses.
+#[derive(Debug, Clone)]
+pub struct SimulationRange {
+    /// One past the last move of this operation in the simulation move list.
+    pub end: usize,
+    pub tool: crate::cam::tool::Tool,
+    pub operation_index: usize,
+}
+
+/// The tool that runs the move at `move_index`.
+pub fn tool_at(ranges: &[SimulationRange], move_index: usize) -> Option<&crate::cam::tool::Tool> {
+    ranges
+        .iter()
+        .find(|range| move_index < range.end)
+        .or_else(|| ranges.last())
+        .map(|range| &range.tool)
+}
+
 /// Time-based playback state for the generated moves.
 #[derive(Debug, Clone, Default)]
 pub struct Simulator {

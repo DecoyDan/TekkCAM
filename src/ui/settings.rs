@@ -90,6 +90,18 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                 }
             });
             ui.separator();
+            ui.heading("Performance");
+            let gpu_before = app.ui_state.use_gpu;
+            ui.checkbox(&mut app.ui_state.use_gpu, "Use GPU acceleration")
+                .on_hover_text(
+                    "Runs toolpath generation checks and the stock simulation on the GPU. Results are the same as on the CPU; turn off if you see graphics problems.",
+                );
+            if app.ui_state.use_gpu != gpu_before {
+                crate::accel::set_gpu_enabled(app.ui_state.use_gpu);
+                preferences_changed = true;
+            }
+            ui.label(egui::RichText::new(crate::accel::status()).size(11.0));
+            ui.separator();
             ui.heading("Default tool");
             let display_units = app.ui_state.display_units;
             let unit_factor = display_units.factor();

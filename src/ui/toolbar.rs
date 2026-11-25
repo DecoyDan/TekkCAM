@@ -273,6 +273,10 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                                 ),
                                 ("⊙  Drilling", crate::cam::operations::Operation::drill()),
                                 (
+                                    "⊙  Helical Bore (mill holes)",
+                                    crate::cam::operations::Operation::helical_bore(),
+                                ),
+                                (
                                     "▭  Contour Cut",
                                     crate::cam::operations::Operation::contour(),
                                 ),
@@ -341,6 +345,27 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                     if ui.button("▶ Generate All").clicked() {
                         for i in 0..app.project.operations.len() {
                             app.generate_operation(i);
+                        }
+                    }
+                    if app.plan_pending {
+                        if ui
+                            .button("✖ Cancel plan")
+                            .on_hover_text("Stop the running auto plan; nothing is changed")
+                            .clicked()
+                        {
+                            app.cancel_auto_plan();
+                        }
+                    } else {
+                        let can_auto_plan = app.project.models.iter().any(|model| model.visible)
+                            && !app.generation_pending;
+                        if ui
+                            .add_enabled(can_auto_plan, egui::Button::new("⚙ Auto Plan"))
+                            .on_hover_text(
+                                "Pick and generate every operation this model needs (roughing, helical bores, finishing)",
+                            )
+                            .clicked()
+                        {
+                            app.ui_state.show_auto_plan_dialog = true;
                         }
                     }
                     let can_select_model_faces = app.ui_state.show_3d_view
@@ -464,24 +489,8 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                         )
                         .clicked()
                     {
-                        app.ui_state.simulator.stop();
-                        if app.ui_state.gcode_text.trim().is_empty() {
-                            app.generate_gcode();
-                        }
-                        match crate::gcode::parser::parse(&app.ui_state.gcode_text) {
-                            Ok(moves) => {
-                                app.ui_state.simulation_moves = moves;
-                                app.ui_state.simulator.reset();
-                                app.ui_state.status_message = "Simulating G-code".into();
-                                ctx.request_repaint();
-                            }
-                            Err(error) => {
-                                app.ui_state.status_message = "Simulation failed".into();
-                                app.ui_state
-                                    .console_log
-                                    .push(format!("✖ Simulation failed: {error}"));
-                            }
-                        }
+                        app.start_simulation();
+                        ctx.request_repaint();
                     }
                     if ui
                         .add(

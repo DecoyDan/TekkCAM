@@ -5,6 +5,8 @@ use egui_wgpu::wgpu::util::DeviceExt;
 use image::RgbImage;
 use std::sync::OnceLock;
 
+use crate::renderer::lighting;
+
 use crate::{
     cam::{
         operations::Operation,
@@ -41,14 +43,8 @@ fn wood_color(u: f32, v: f32) -> [f32; 3] {
     let x = (u.rem_euclid(1.0) * texture.width() as f32) as u32;
     let y = ((1.0 - v).rem_euclid(1.0) * texture.height() as f32) as u32;
     let pixel = texture.get_pixel(x.min(texture.width() - 1), y.min(texture.height() - 1));
-    pixel.0.map(|channel| {
-        let srgb = channel as f32 / 255.0;
-        if srgb <= 0.04045 {
-            srgb / 12.92
-        } else {
-            ((srgb + 0.055) / 1.055).powf(2.4)
-        }
-    })
+    // Display (sRGB) colour; `lighting::shade` does the linear-light maths.
+    pixel.0.map(|channel| channel as f32 / 255.0)
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -62,6 +58,8 @@ pub enum StockMaterial {
 pub struct SimulationProgress<'a> {
     pub moves: &'a [ToolMove],
     pub state: &'a crate::gcode::simulator::Simulator,
+    /// Which operation's tool runs each part of `moves`.
+    pub ranges: &'a [crate::gcode::simulator::SimulationRange],
 }
 
 impl StockMaterial {
@@ -92,12 +90,7 @@ pub struct Scene {
     pub toolpaths: Vec<Vertex>,
 }
 
-fn append_shaded_triangle(
-    scene: &mut Scene,
-    points: [[f32; 3]; 3],
-    base: [f32; 3],
-    orbit: [f32; 2],
-) {
+fn face_normal(points: [[f32; 3]; 3]) -> [f32; 3] {
     let u = [
         points[1][0] - points[0][0],
         points[1][1] - points[0][1],
@@ -108,23 +101,73 @@ fn append_shaded_triangle(
         points[2][1] - points[0][1],
         points[2][2] - points[0][2],
     ];
-    let normal = [
+    [
         u[1] * v[2] - u[2] * v[1],
         u[2] * v[0] - u[0] * v[2],
         u[0] * v[1] - u[1] * v[0],
-    ];
-    let magnitude = (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2])
-        .sqrt()
-        .max(1e-8);
-    let light = (normal[0] * 0.3 + normal[1] * 0.5 + normal[2] * 0.8) / magnitude;
-    let shade = 0.28 + 0.72 * light.max(0.0);
-    let color = [base[0] * shade, base[1] * shade, base[2] * shade, 1.0];
-    for point in points {
+    ]
+}
+
+/// A triangle lit per vertex: each corner has its own colour, normal and baked
+/// `[ambient occlusion, shadow]` factors.
+fn append_lit_triangle(
+    scene: &mut Scene,
+    points: [[f32; 3]; 3],
+    colors: [[f32; 3]; 3],
+    normals: [[f32; 3]; 3],
+    factors: [[f32; 2]; 3],
+    surface: lighting::Surface,
+    orbit: [f32; 2],
+) {
+    let view = view_direction(orbit);
+    for corner in 0..3 {
+        let color = lighting::shade(
+            colors[corner],
+            normals[corner],
+            view,
+            surface,
+            factors[corner][0],
+            factors[corner][1],
+        );
         scene.triangles.push(Vertex {
-            pos: project_point(point[0], point[1], point[2], true, orbit),
-            color,
+            pos: project_point(
+                points[corner][0],
+                points[corner][1],
+                points[corner][2],
+                true,
+                orbit,
+            ),
+            color: [color[0], color[1], color[2], 1.0],
         });
     }
+}
+
+fn append_shaded_triangle(
+    scene: &mut Scene,
+    points: [[f32; 3]; 3],
+    base: [f32; 3],
+    orbit: [f32; 2],
+) {
+    append_shaded_triangle_with(scene, points, base, orbit, lighting::Surface::MATTE);
+}
+
+fn append_shaded_triangle_with(
+    scene: &mut Scene,
+    points: [[f32; 3]; 3],
+    base: [f32; 3],
+    orbit: [f32; 2],
+    surface: lighting::Surface,
+) {
+    let normal = face_normal(points);
+    append_lit_triangle(
+        scene,
+        points,
+        [base; 3],
+        [normal; 3],
+        [[1.0, 1.0]; 3],
+        surface,
+        orbit,
+    );
 }
 
 fn append_material_triangle(
@@ -133,32 +176,16 @@ fn append_material_triangle(
     colors: [[f32; 3]; 3],
     orbit: [f32; 2],
 ) {
-    let u = [
-        points[1][0] - points[0][0],
-        points[1][1] - points[0][1],
-        points[1][2] - points[0][2],
-    ];
-    let v = [
-        points[2][0] - points[0][0],
-        points[2][1] - points[0][1],
-        points[2][2] - points[0][2],
-    ];
-    let normal = [
-        u[1] * v[2] - u[2] * v[1],
-        u[2] * v[0] - u[0] * v[2],
-        u[0] * v[1] - u[1] * v[0],
-    ];
-    let magnitude = (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2])
-        .sqrt()
-        .max(1e-8);
-    let light = (normal[0] * 0.3 + normal[1] * 0.5 + normal[2] * 0.8) / magnitude;
-    let shade = 0.28 + 0.72 * light.max(0.0);
-    for (point, color) in points.into_iter().zip(colors) {
-        scene.triangles.push(Vertex {
-            pos: project_point(point[0], point[1], point[2], true, orbit),
-            color: [color[0] * shade, color[1] * shade, color[2] * shade, 1.0],
-        });
-    }
+    let normal = face_normal(points);
+    append_lit_triangle(
+        scene,
+        points,
+        colors,
+        [normal; 3],
+        [[1.0, 1.0]; 3],
+        lighting::Surface::WOOD,
+        orbit,
+    );
 }
 
 fn append_textured_face(scene: &mut Scene, quad: [[f32; 3]; 4], plane: usize, orbit: [f32; 2]) {
@@ -216,6 +243,175 @@ fn append_textured_face(scene: &mut Scene, quad: [[f32; 3]; 4], plane: usize, or
     }
 }
 
+/// Split every triangle whose longest edge exceeds `limit` into four, up to
+/// `depth` times.
+fn split_large_triangles(triangles: &mut Vec<[[f32; 3]; 3]>, limit: f32, depth: usize) {
+    for _ in 0..depth {
+        let mut next = Vec::with_capacity(triangles.len());
+        let mut changed = false;
+        for t in triangles.iter() {
+            let edge = |a: [f32; 3], b: [f32; 3]| {
+                ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+            };
+            let longest = edge(t[0], t[1]).max(edge(t[1], t[2])).max(edge(t[2], t[0]));
+            if longest <= limit {
+                next.push(*t);
+                continue;
+            }
+            changed = true;
+            let mid = |a: [f32; 3], b: [f32; 3]| {
+                [
+                    (a[0] + b[0]) * 0.5,
+                    (a[1] + b[1]) * 0.5,
+                    (a[2] + b[2]) * 0.5,
+                ]
+            };
+            let (ab, bc, ca) = (mid(t[0], t[1]), mid(t[1], t[2]), mid(t[2], t[0]));
+            next.extend([[t[0], ab, ca], [ab, t[1], bc], [ca, bc, t[2]], [ab, bc, ca]]);
+        }
+        *triangles = next;
+        if !changed {
+            break;
+        }
+    }
+}
+
+/// Matte plastic with a soft highlight.
+const MODEL_SURFACE: lighting::Surface = lighting::Surface {
+    specular: 0.28,
+    shininess: 42.0,
+};
+
+/// A top-down height-field of the visible models (None when there are none).
+fn model_height_field(models: &[Model]) -> Option<lighting::HeightField> {
+    let mut low = [f32::INFINITY; 2];
+    let mut high = [f32::NEG_INFINITY; 2];
+    let mut any = false;
+    for model in models.iter().filter(|model| model.visible) {
+        let bounds = model.transformed_bounds();
+        for axis in 0..2 {
+            low[axis] = low[axis].min(bounds[0][axis]);
+            high[axis] = high[axis].max(bounds[1][axis]);
+        }
+        any = true;
+    }
+    if !any || !low.iter().chain(high.iter()).all(|v| v.is_finite()) {
+        return None;
+    }
+    let triangles = models
+        .iter()
+        .filter(|model| model.visible)
+        .flat_map(|model| {
+            // At most ~150k triangles are rasterised.
+            let stride = model.triangles.len().div_ceil(150_000).max(1);
+            model
+                .triangles
+                .iter()
+                .step_by(stride)
+                .filter_map(move |face| {
+                    let a = model.transformed_vertex(face[0] as usize)?;
+                    let b = model.transformed_vertex(face[1] as usize)?;
+                    let c = model.transformed_vertex(face[2] as usize)?;
+                    Some([a, b, c])
+                })
+        });
+    Some(lighting::HeightField::from_triangles(
+        triangles,
+        (low, high),
+        384,
+    ))
+}
+
+/// Smooth vertex normals and baked occlusion/shadow factors for one model.
+struct ModelLighting<'a> {
+    field: Option<&'a lighting::HeightField>,
+    normals: std::collections::HashMap<[i32; 3], Vec<[f32; 3]>>,
+    occlusion_radius: f32,
+    shadow_reach: f32,
+}
+
+impl<'a> ModelLighting<'a> {
+    /// Faces meeting at an angle sharper than this stay creased.
+    const CREASE_COS: f32 = 0.766; // 40 degrees
+
+    fn new(model: &Model, field: Option<&'a lighting::HeightField>) -> Self {
+        let mut normals: std::collections::HashMap<[i32; 3], Vec<[f32; 3]>> =
+            std::collections::HashMap::new();
+        for face in &model.triangles {
+            let points: Option<Vec<[f32; 3]>> = face
+                .iter()
+                .map(|&index| model.transformed_vertex(index as usize))
+                .collect();
+            let Some(points) = points else { continue };
+            let triangle = [points[0], points[1], points[2]];
+            let normal = face_normal(triangle);
+            for point in triangle {
+                normals.entry(Self::key(point)).or_default().push(normal);
+            }
+        }
+        let bounds = model.transformed_bounds();
+        let extent = (0..3)
+            .map(|axis| bounds[1][axis] - bounds[0][axis])
+            .fold(1.0_f32, f32::max);
+        Self {
+            field,
+            normals,
+            occlusion_radius: (extent * 0.05).clamp(1.5, 8.0),
+            shadow_reach: (extent * 0.6).clamp(6.0, 80.0),
+        }
+    }
+
+    fn key(point: [f32; 3]) -> [i32; 3] {
+        point.map(|value| (value * 50.0).round() as i32)
+    }
+
+    fn unit(v: [f32; 3]) -> [f32; 3] {
+        let length = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(1e-12);
+        [v[0] / length, v[1] / length, v[2] / length]
+    }
+
+    /// Normals of a face's corners, averaged with the neighbouring faces that
+    /// are not creased away.
+    fn vertex_normals(&self, points: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
+        let own = Self::unit(face_normal(points));
+        points.map(|point| {
+            let mut sum = [0.0_f32; 3];
+            if let Some(neighbours) = self.normals.get(&Self::key(point)) {
+                for neighbour in neighbours {
+                    let unit = Self::unit(*neighbour);
+                    let same_side = own[0] * unit[0] + own[1] * unit[1] + own[2] * unit[2];
+                    if same_side >= Self::CREASE_COS {
+                        // Larger faces count for more.
+                        let weight =
+                            (neighbour[0].powi(2) + neighbour[1].powi(2) + neighbour[2].powi(2))
+                                .sqrt()
+                                .max(1e-9);
+                        for axis in 0..3 {
+                            sum[axis] += unit[axis] * weight.sqrt();
+                        }
+                    }
+                }
+            }
+            if sum == [0.0; 3] {
+                own
+            } else {
+                Self::unit(sum)
+            }
+        })
+    }
+
+    /// `[ambient occlusion, shadow]` at a point of the model surface.
+    fn factors(&self, point: [f32; 3]) -> [f32; 2] {
+        let Some(field) = self.field else {
+            return [1.0, 1.0];
+        };
+        [
+            field.ambient_occlusion(point, self.occlusion_radius),
+            field.shadow(point, lighting::key_light(), self.shadow_reach),
+        ]
+    }
+}
+
 impl Scene {
     pub fn build(
         layers: &[Layer],
@@ -238,6 +434,7 @@ impl Scene {
             ..Default::default()
         };
         if view_3d && render_stock {
+            append_ground_shadow(&mut scene, setup, orbit);
             append_stock_solid(&mut scene, setup, stock_material, orbit, render_stock);
         } else if !view_3d {
             append_stock_top_surface(&mut scene, setup, stock_material);
@@ -263,6 +460,11 @@ impl Scene {
                 color,
             }));
         }
+        // One top-down height-field of every visible model, for occlusion and
+        // shadows (skipped while the view is being dragged).
+        let lighting_field = (view_3d && !orbit_preview)
+            .then(|| model_height_field(models))
+            .flatten();
         for (model_index, model) in models
             .iter()
             .enumerate()
@@ -296,6 +498,12 @@ impl Scene {
                     }
                 }
             }
+            let model_extent = {
+                let bounds = model.transformed_bounds();
+                (0..3)
+                    .map(|axis| bounds[1][axis] - bounds[0][axis])
+                    .fold(0.0_f32, f32::max)
+            };
             let mut faces = Vec::with_capacity(if orbit_preview {
                 (model.triangles.len() + stride - 1) / stride
             } else {
@@ -313,20 +521,46 @@ impl Scene {
                 let selected = triangle_face_ids[triangle_index]
                     .is_some_and(|face_id| selected_face_ids.contains(&face_id));
                 let color = if selected { [0.15, 0.95, 0.95] } else { base };
-                let depth = points
-                    .iter()
-                    .map(|p| camera_point(*p, orbit)[2])
-                    .sum::<f32>()
-                    / 3.0;
-                faces.push((depth, points, color));
+                // Big flat faces are split so they sort correctly against what stands
+                // on them, and so occlusion and shadows can vary across them.
+                let mut pieces = vec![points];
+                if !orbit_preview && model_extent > 0.0 {
+                    split_large_triangles(&mut pieces, model_extent * 0.1, 3);
+                }
+                for piece in pieces {
+                    let depth = piece
+                        .iter()
+                        .map(|p| camera_point(*p, orbit)[2])
+                        .sum::<f32>()
+                        / 3.0;
+                    faces.push((depth, piece, color));
+                }
             }
             // camera_point() produces larger depth for points closer to the
             // viewer. Paint the far faces first so nearer faces cover them.
             // Sort the sampled drag preview too; otherwise source mesh order
             // lets back faces flash over the front while the camera orbits.
-            faces.sort_by(|a, b| a.0.total_cmp(&b.0));
-            for (_, points, color) in faces {
-                append_shaded_triangle(&mut scene, points, color, orbit);
+            faces.sort_by(|a, b| b.0.total_cmp(&a.0));
+            if orbit_preview || faces.is_empty() {
+                // Cheap flat shading while the view is being dragged.
+                for (_, points, color) in faces {
+                    append_shaded_triangle_with(&mut scene, points, color, orbit, MODEL_SURFACE);
+                }
+            } else {
+                let lit = ModelLighting::new(model, lighting_field.as_ref());
+                for (_, points, color) in faces {
+                    let normals = lit.vertex_normals(points);
+                    let factors = points.map(|p| lit.factors(p));
+                    append_lit_triangle(
+                        &mut scene,
+                        points,
+                        [color; 3],
+                        normals,
+                        factors,
+                        MODEL_SURFACE,
+                        orbit,
+                    );
+                }
             }
         }
         // Show the configured stock envelope in 3D so model placement and
@@ -391,39 +625,57 @@ impl Scene {
             );
         }
         if view_3d {
-            if let Some(model) = models.iter().find(|model| model.visible) {
-                let extent = (0..3)
-                    .map(|axis| {
-                        let bounds = model.transformed_bounds();
-                        (bounds[1][axis] - bounds[0][axis]).abs()
-                    })
-                    .fold(1.0_f32, f32::max)
-                    * 0.6;
-                for (end, color) in [
-                    ([extent, 0.0, 0.0], [0.95, 0.3, 0.3, 1.0]),
-                    ([0.0, extent, 0.0], [0.35, 0.85, 0.4, 1.0]),
-                    ([0.0, 0.0, extent], [0.35, 0.6, 1.0, 1.0]),
-                ] {
-                    scene.lines.push(Vertex {
-                        pos: project_point(0.0, 0.0, 0.0, true, orbit),
-                        color,
-                    });
-                    scene.lines.push(Vertex {
-                        pos: project_point(end[0], end[1], end[2], true, orbit),
-                        color,
-                    });
-                }
+            // The axis triad always sits at the centre of the stock's top face,
+            // so it follows the stock when it is resized, moved or fitted to a model.
+            let anchor = stock_top_center(setup);
+            let extent = models
+                .iter()
+                .find(|model| model.visible)
+                .map(|model| {
+                    let bounds = model.transformed_bounds();
+                    (0..3)
+                        .map(|axis| (bounds[1][axis] - bounds[0][axis]).abs())
+                        .fold(1.0_f32, f32::max)
+                })
+                .unwrap_or_else(|| {
+                    setup
+                        .stock_size_mm
+                        .iter()
+                        .fold(1.0_f32, |largest, size| largest.max(*size as f32))
+                })
+                * 0.6;
+            for (direction, color) in [
+                ([1.0_f32, 0.0, 0.0], [0.95, 0.3, 0.3, 1.0]),
+                ([0.0, 1.0, 0.0], [0.35, 0.85, 0.4, 1.0]),
+                ([0.0, 0.0, 1.0], [0.35, 0.6, 1.0, 1.0]),
+            ] {
+                scene.lines.push(Vertex {
+                    pos: project_point(anchor[0], anchor[1], anchor[2], true, orbit),
+                    color,
+                });
+                scene.lines.push(Vertex {
+                    pos: project_point(
+                        anchor[0] + direction[0] * extent,
+                        anchor[1] + direction[1] * extent,
+                        anchor[2] + direction[2] * extent,
+                        true,
+                        orbit,
+                    ),
+                    color,
+                });
             }
         }
-        for op in operations
+        for (operation_index, op) in operations
             .iter()
-            .filter(|op| op.generated && !op.excluded_from_toolpath)
+            .enumerate()
+            .filter(|(_, op)| op.generated && !op.excluded_from_toolpath && op.visible)
         {
+            // One colour per operation (as in PowerMill / Fusion 360), so every
+            // operation can be told apart; rapids are a faint trace of it.
+            let [red, green, blue] = crate::cam::operations::operation_color(operation_index);
             let colour = |kind| match kind {
-                MoveKind::Rapid => [0.35, 0.55, 0.95, 0.55],
-                MoveKind::Feed => [1.0, 0.45, 0.15, 1.0],
-                MoveKind::Arc => [0.85, 0.35, 1.0, 1.0],
-                MoveKind::Drill => [1.0, 0.85, 0.15, 1.0],
+                MoveKind::Rapid => [red, green, blue, 0.35],
+                MoveKind::Feed | MoveKind::Arc | MoveKind::Drill => [red, green, blue, 1.0],
             };
             let mut previous: Option<[f32; 3]> = None;
             for mv in &op.toolpath.moves {
@@ -467,6 +719,21 @@ impl Scene {
     }
 }
 
+/// Centre of the stock's top face in world coordinates.
+fn stock_top_center(setup: &MachiningSetup) -> [f32; 3] {
+    let origin = setup.stock_origin_mm;
+    let size = setup.stock_size_mm;
+    let top = match setup.axis {
+        WorkAxis::ZUp => origin[2] + size[2],
+        WorkAxis::ZDown => origin[2],
+    };
+    [
+        (origin[0] + size[0] * 0.5) as f32,
+        (origin[1] + size[1] * 0.5) as f32,
+        top as f32,
+    ]
+}
+
 fn append_stock_top_surface(scene: &mut Scene, setup: &MachiningSetup, material: StockMaterial) {
     let min = setup.stock_origin_mm;
     let max_x = min[0] + setup.stock_size_mm[0];
@@ -497,6 +764,62 @@ fn append_stock_top_surface(scene: &mut Scene, setup: &MachiningSetup, material:
                 color: edge,
             },
         ]);
+    }
+}
+
+/// A soft contact shadow of the stock on the ground plane below it, thrown
+/// away from the key light, so the part reads as standing on something.
+fn append_ground_shadow(scene: &mut Scene, setup: &MachiningSetup, orbit: [f32; 2]) {
+    let size = setup.stock_size_mm.map(|v| v as f32);
+    let bottom = match setup.axis {
+        WorkAxis::ZUp => setup.stock_origin_mm[2] as f32,
+        WorkAxis::ZDown => (setup.stock_origin_mm[2] - setup.stock_size_mm[2]) as f32,
+    };
+    let z = bottom - 0.05;
+    let light = lighting::key_light();
+    let horizontal = light[0].hypot(light[1]).max(1e-3);
+    // The shadow of a block of height h on the ground is displaced by h / tan(elevation).
+    let throw = size[2] * horizontal / light[2].max(0.2) * 0.55;
+    let offset = [
+        -light[0] / horizontal * throw,
+        -light[1] / horizontal * throw,
+    ];
+    let low = [
+        setup.stock_origin_mm[0] as f32 + offset[0],
+        setup.stock_origin_mm[1] as f32 + offset[1],
+    ];
+    let high = [low[0] + size[0], low[1] + size[1]];
+    let blur = (size[0].max(size[1]) * 0.12).max(6.0);
+    let reach = blur * 1.8;
+    const N: usize = 24;
+    let min = [low[0] - reach, low[1] - reach];
+    let span = [size[0] + 2.0 * reach, size[1] + 2.0 * reach];
+    let alpha_at = |x: f32, y: f32| {
+        let dx = (low[0] - x).max(0.0).max(x - high[0]);
+        let dy = (low[1] - y).max(0.0).max(y - high[1]);
+        let distance = dx.hypot(dy);
+        let t = (distance / reach).clamp(0.0, 1.0);
+        let smooth = t * t * (3.0 - 2.0 * t);
+        0.5 * (1.0 - smooth)
+    };
+    let vertex = |i: usize, j: usize| {
+        let x = min[0] + span[0] * i as f32 / N as f32;
+        let y = min[1] + span[1] * j as f32 / N as f32;
+        Vertex {
+            pos: project_point(x, y, z, true, orbit),
+            color: [0.0, 0.0, 0.0, alpha_at(x, y)],
+        }
+    };
+    for j in 0..N {
+        for i in 0..N {
+            let (a, b, c, d) = (
+                vertex(i, j),
+                vertex(i + 1, j),
+                vertex(i + 1, j + 1),
+                vertex(i, j + 1),
+            );
+            scene.triangles.extend([a, b, c, a, c, d]);
+        }
     }
 }
 
@@ -562,7 +885,7 @@ fn append_stock_solid(
                     .sum::<f32>()
                     / 4.0
             };
-            depth(&a.0).total_cmp(&depth(&b.0))
+            depth(&b.0).total_cmp(&depth(&a.0))
         });
         for (quad, plane) in ordered {
             append_textured_face(scene, quad, plane, orbit);
@@ -580,9 +903,14 @@ fn append_stock_solid(
                 (depth, points)
             })
             .collect();
-        triangles.sort_by(|a, b| a.0.total_cmp(&b.0));
+        triangles.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let surface = if textured && material != StockMaterial::Wood {
+            lighting::Surface::METAL
+        } else {
+            lighting::Surface::MATTE
+        };
         for (_, points) in triangles {
-            append_shaded_triangle(scene, points, base, orbit);
+            append_shaded_triangle_with(scene, points, base, orbit, surface);
         }
         // Fine parallel highlights suggest brushed metal without adding visual clutter.
         let top_z = match setup.axis {
@@ -648,60 +976,78 @@ fn append_stock_removal_preview(
     };
     let mut heights = vec![top; (nx + 1) * (ny + 1)];
 
-    let preview_paths: Vec<(Vec<ToolMove>, f64, [f64; 2])> = if let Some(simulation) = simulation {
-        let index = simulation.state.move_index.min(simulation.moves.len());
-        let mut moves = simulation.moves[..index].to_vec();
-        if index < simulation.moves.len() && simulation.state.fraction > 0.0 {
-            let at = simulation.state.position.unwrap_or([0.0, 0.0]);
-            moves.push(partial_simulation_move(
-                &simulation.moves[index],
-                at,
-                simulation.state.z,
-            ));
-        }
-        let origin = setup.work_origin_mm;
-        moves = moves
-            .into_iter()
-            .map(|movement| move_to_world(movement, origin))
-            .collect();
-        let radius = operations
-            .iter()
-            .find(|operation| operation.generated)
-            .map(|operation| operation.tool.diameter_mm * 0.5)
-            .unwrap_or(0.5);
-        vec![(moves, radius, [origin[0], origin[1]])]
-    } else {
-        operations
-            .iter()
-            .filter(|operation| operation.generated && !operation.excluded_from_toolpath)
-            .map(|operation| {
-                (
-                    operation.toolpath.moves.clone(),
-                    operation.tool.diameter_mm * 0.5,
-                    [0.0, 0.0],
-                )
-            })
-            .collect()
-    };
+    let preview_paths: Vec<(Vec<ToolMove>, crate::cam::tool::Tool, [f64; 2])> =
+        if let Some(simulation) = simulation {
+            let index = simulation.state.move_index.min(simulation.moves.len());
+            let mut moves = simulation.moves[..index].to_vec();
+            if index < simulation.moves.len() && simulation.state.fraction > 0.0 {
+                let at = simulation.state.position.unwrap_or([0.0, 0.0]);
+                moves.push(partial_simulation_move(
+                    &simulation.moves[index],
+                    at,
+                    simulation.state.z,
+                ));
+            }
+            let origin = setup.work_origin_mm;
+            moves = moves
+                .into_iter()
+                .map(|movement| move_to_world(movement, origin))
+                .collect();
+            // Split the executed moves between the operations that made them, so
+            // each part is cut with its own tool.
+            let fallback_tool = operations
+                .iter()
+                .find(|operation| operation.generated)
+                .map(|operation| operation.tool.clone())
+                .unwrap_or_default();
+            if simulation.ranges.is_empty() {
+                vec![(moves, fallback_tool, [origin[0], origin[1]])]
+            } else {
+                let mut groups = Vec::new();
+                let mut start = 0;
+                for range in simulation.ranges {
+                    let end = range.end.min(moves.len());
+                    if start < end {
+                        groups.push((
+                            moves[start..end].to_vec(),
+                            range.tool.clone(),
+                            [origin[0], origin[1]],
+                        ));
+                    }
+                    start = start.max(end);
+                }
+                groups
+            }
+        } else {
+            operations
+                .iter()
+                .filter(|operation| {
+                    operation.generated && !operation.excluded_from_toolpath && operation.visible
+                })
+                .map(|operation| {
+                    (
+                        operation.toolpath.moves.clone(),
+                        operation.tool.clone(),
+                        [0.0, 0.0],
+                    )
+                })
+                .collect()
+        };
 
-    for (moves, radius, start_xy) in preview_paths {
+    for (moves, cutter, start_xy) in preview_paths {
+        let radius = cutter.diameter_mm * 0.5;
         let mut current = [start_xy[0], start_xy[1], top];
+        // Every cut of this path is collected and swept in one batch, on the GPU
+        // when there is one.
+        let mut cuts: Vec<crate::accel::Cut> = Vec::with_capacity(moves.len());
+        let mut cut = |from: [f64; 3], to: [f64; 3]| {
+            cuts.push([from.map(|v| v as f32), to.map(|v| v as f32)]);
+        };
         for movement in &moves {
             match movement {
                 ToolMove::Rapid { to, z } => current = [to[0], to[1], *z],
                 ToolMove::Feed { to, z, .. } => {
-                    apply_cut_segment(
-                        &mut heights,
-                        nx,
-                        ny,
-                        origin,
-                        dx,
-                        dy,
-                        floor,
-                        [current[0], current[1], current[2]],
-                        [to[0], to[1], *z],
-                        radius,
-                    );
+                    cut(current, [to[0], to[1], *z]);
                     current = [to[0], to[1], *z];
                 }
                 ToolMove::Arc {
@@ -726,38 +1072,33 @@ fn append_stock_removal_preview(
                             center[1] + radius_arc * angle.sin(),
                             current[2] + (z - current[2]) * t,
                         ];
-                        apply_cut_segment(
-                            &mut heights,
-                            nx,
-                            ny,
-                            origin,
-                            dx,
-                            dy,
-                            floor,
-                            previous,
-                            next,
-                            radius,
-                        );
+                        cut(previous, next);
                         previous = next;
                     }
                     current = [to[0], to[1], *z];
                 }
                 ToolMove::Drill { at, depth, .. } => {
-                    apply_cut_segment(
-                        &mut heights,
-                        nx,
-                        ny,
-                        origin,
-                        dx,
-                        dy,
-                        floor,
-                        [at[0], at[1], top],
-                        [at[0], at[1], *depth],
-                        radius,
-                    );
+                    cut([at[0], at[1], top], [at[0], at[1], *depth]);
                     current = [at[0], at[1], *depth];
                 }
             }
+        }
+        let spec = crate::accel::GridSpec {
+            origin: [origin[0], origin[1]],
+            cell: [dx, dy],
+            columns: nx + 1,
+            rows: ny + 1,
+            floor: floor as f32,
+        };
+        let mut swept: Vec<f32> = heights.iter().map(|height| *height as f32).collect();
+        crate::accel::cut_capsules(
+            &spec,
+            &mut swept,
+            &cuts,
+            crate::accel::CutTool::from_tool(&cutter),
+        );
+        for (height, value) in heights.iter_mut().zip(swept) {
+            *height = value as f64;
         }
     }
 
@@ -769,12 +1110,68 @@ fn append_stock_removal_preview(
         ]
     };
     let base = material.color();
+    let surface = match material {
+        StockMaterial::Wood => lighting::Surface::WOOD,
+        _ => lighting::Surface::METAL,
+    };
+    // Occlusion and shadow baked from the cut surface itself, so pockets get
+    // darker corners and walls throw soft shadows. Half resolution at the
+    // settled 512 grid keeps rebuilds quick.
+    let node_heights: Vec<f32> = heights.iter().map(|h| *h as f32).collect();
+    let field = lighting::HeightField::from_grid(
+        [origin[0] as f32, origin[1] as f32],
+        [dx as f32, dy as f32],
+        nx + 1,
+        ny + 1,
+        node_heights.clone(),
+    );
+    let step = if nx > 256 { 2 } else { 1 };
+    let size_mm = setup.stock_size_mm[0].max(setup.stock_size_mm[1]) as f32;
+    let occlusion_radius = (size_mm * 0.03).clamp(2.0, 8.0);
+    let shadow_reach = (size_mm * 0.25).clamp(8.0, 60.0);
+    let coarse_cols = nx / step + 2;
+    let mut baked = vec![[1.0_f32, 1.0]; coarse_cols * (ny / step + 2)];
+    for cy in 0..=(ny / step) {
+        for cx in 0..=(nx / step) {
+            let (ix, iy) = ((cx * step).min(nx), (cy * step).min(ny));
+            let p = [
+                (origin[0] + ix as f64 * dx) as f32,
+                (origin[1] + iy as f64 * dy) as f32,
+                node_heights[iy * (nx + 1) + ix],
+            ];
+            baked[cy * coarse_cols + cx] = [
+                field.ambient_occlusion(p, occlusion_radius),
+                field.shadow(p, lighting::key_light(), shadow_reach),
+            ];
+        }
+    }
+    let factors = |ix: usize, iy: usize| baked[(iy / step) * coarse_cols + ix / step];
+    let normal_at = |ix: usize, iy: usize| {
+        let at = |x: usize, y: usize| node_heights[y.min(ny) * (nx + 1) + x.min(nx)];
+        let (x0, x1) = (ix.saturating_sub(1), (ix + 1).min(nx));
+        let (y0, y1) = (iy.saturating_sub(1), (iy + 1).min(ny));
+        let gx = (at(x1, iy) - at(x0, iy)) / ((x1 - x0).max(1) as f32 * dx as f32);
+        let gy = (at(ix, y1) - at(ix, y0)) / ((y1 - y0).max(1) as f32 * dy as f32);
+        [-gx, -gy, 1.0]
+    };
     for iy in 0..ny {
         for ix in 0..nx {
             let a = point(ix, iy);
             let b = point(ix + 1, iy);
             let c = point(ix + 1, iy + 1);
             let d = point(ix, iy + 1);
+            let corner_normals = [
+                normal_at(ix, iy),
+                normal_at(ix + 1, iy),
+                normal_at(ix + 1, iy + 1),
+                normal_at(ix, iy + 1),
+            ];
+            let corner_factors = [
+                factors(ix, iy),
+                factors(ix + 1, iy),
+                factors(ix + 1, iy + 1),
+                factors(ix, iy + 1),
+            ];
             let removed =
                 (top - (a[2] as f64 + b[2] as f64 + c[2] as f64 + d[2] as f64) * 0.25).max(0.0);
             let cut_tint = match material {
@@ -794,21 +1191,43 @@ fn append_stock_removal_preview(
                         albedo[channel] * (1.0 - blend) + cut_tint[channel] * blend
                     })
                 };
-                append_material_triangle(
+                append_lit_triangle(
                     scene,
                     [a, b, c],
                     [texture_color(a), texture_color(b), texture_color(c)],
+                    [corner_normals[0], corner_normals[1], corner_normals[2]],
+                    [corner_factors[0], corner_factors[1], corner_factors[2]],
+                    surface,
                     orbit,
                 );
-                append_material_triangle(
+                append_lit_triangle(
                     scene,
                     [a, c, d],
                     [texture_color(a), texture_color(c), texture_color(d)],
+                    [corner_normals[0], corner_normals[2], corner_normals[3]],
+                    [corner_factors[0], corner_factors[2], corner_factors[3]],
+                    surface,
                     orbit,
                 );
             } else {
-                append_shaded_triangle(scene, [a, b, c], cut_base, orbit);
-                append_shaded_triangle(scene, [a, c, d], cut_base, orbit);
+                append_lit_triangle(
+                    scene,
+                    [a, b, c],
+                    [cut_base; 3],
+                    [corner_normals[0], corner_normals[1], corner_normals[2]],
+                    [corner_factors[0], corner_factors[1], corner_factors[2]],
+                    surface,
+                    orbit,
+                );
+                append_lit_triangle(
+                    scene,
+                    [a, c, d],
+                    [cut_base; 3],
+                    [corner_normals[0], corner_normals[2], corner_normals[3]],
+                    [corner_factors[0], corner_factors[2], corner_factors[3]],
+                    surface,
+                    orbit,
+                );
             }
         }
     }
@@ -885,53 +1304,6 @@ fn move_to_world(movement: ToolMove, origin: [f64; 3]) -> ToolMove {
     }
 }
 
-fn apply_cut_segment(
-    heights: &mut [f64],
-    nx: usize,
-    ny: usize,
-    origin: [f64; 3],
-    dx: f64,
-    dy: f64,
-    floor: f64,
-    start: [f64; 3],
-    end: [f64; 3],
-    cutter_radius: f64,
-) {
-    // Sample the actual cutter footprint. Expanding by half a grid cell made
-    // each cut visibly oversized and square at the preview's old resolution.
-    let radius = cutter_radius;
-    let min_x = (((start[0].min(end[0]) - radius - origin[0]) / dx).floor() as isize)
-        .clamp(0, nx as isize) as usize;
-    let max_x = (((start[0].max(end[0]) + radius - origin[0]) / dx).ceil() as isize)
-        .clamp(0, nx as isize) as usize;
-    let min_y = (((start[1].min(end[1]) - radius - origin[1]) / dy).floor() as isize)
-        .clamp(0, ny as isize) as usize;
-    let max_y = (((start[1].max(end[1]) + radius - origin[1]) / dy).ceil() as isize)
-        .clamp(0, ny as isize) as usize;
-    let ab = [end[0] - start[0], end[1] - start[1]];
-    let length_sq = ab[0] * ab[0] + ab[1] * ab[1];
-    let radius_sq = radius * radius;
-    for iy in min_y..=max_y {
-        for ix in min_x..=max_x {
-            let x = origin[0] + ix as f64 * dx;
-            let y = origin[1] + iy as f64 * dy;
-            let t = if length_sq > f64::EPSILON {
-                (((x - start[0]) * ab[0] + (y - start[1]) * ab[1]) / length_sq).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            let px = start[0] + ab[0] * t;
-            let py = start[1] + ab[1] * t;
-            let dist_sq = (x - px) * (x - px) + (y - py) * (y - py);
-            if dist_sq <= radius_sq {
-                let cut_z = (start[2] + (end[2] - start[2]) * t).max(floor);
-                let height = &mut heights[iy * (nx + 1) + ix];
-                *height = height.min(cut_z);
-            }
-        }
-    }
-}
-
 fn arc_sweep(start: f64, end: f64, clockwise: bool) -> f64 {
     let mut sweep = end - start;
     if clockwise {
@@ -997,6 +1369,19 @@ fn camera_point(point: [f32; 3], orbit: [f32; 2]) -> [f32; 3] {
     [x, y * sp + point[2] * cp, y * cp - point[2] * sp]
 }
 
+/// Unit vector, in world coordinates, from the scene toward the viewer.
+///
+/// `camera_point`'s Z grows *away* from the viewer (a face is front-facing when
+/// its camera-space normal Z is negative), so the direction toward the viewer
+/// is the negative gradient of that Z.
+pub fn view_direction(orbit: [f32; 2]) -> [f32; 3] {
+    let yaw = std::f32::consts::FRAC_PI_4 + orbit[0];
+    let pitch = (35.264_f32.to_radians() + orbit[1]).clamp(-1.52, 1.52);
+    let (sy, cy) = yaw.sin_cos();
+    let (sp, cp) = pitch.sin_cos();
+    [-sy * cp, -cy * cp, sp]
+}
+
 fn is_front_facing(points: [[f32; 3]; 3], orbit: [f32; 2]) -> bool {
     let u = [
         points[1][0] - points[0][0],
@@ -1051,6 +1436,398 @@ mod tests {
         // Negative CNC Z is below the work plane and projects downward in the view.
         assert!(cut[1] < surface[1]);
         assert_eq!(project_point(4.0, 2.0, -3.0, false, [0.0, 0.0]), [4.0, 2.0]);
+    }
+
+    /// Software-rasterise a scene (painter's order, alpha blended) to a PNG, so
+    /// the look of the 3D view can be inspected without a window.
+    fn rasterise(scene: &Scene, path: &str) {
+        let (width, height) = (1000u32, 760u32);
+        let mut low = [f32::INFINITY; 2];
+        let mut high = [f32::NEG_INFINITY; 2];
+        for vertex in &scene.triangles {
+            for axis in 0..2 {
+                low[axis] = low[axis].min(vertex.pos[axis]);
+                high[axis] = high[axis].max(vertex.pos[axis]);
+            }
+        }
+        let scale = ((width as f32 - 40.0) / (high[0] - low[0]))
+            .min((height as f32 - 40.0) / (high[1] - low[1]));
+        let to_pixel = |pos: [f32; 2]| {
+            [
+                20.0 + (pos[0] - low[0]) * scale,
+                height as f32 - 20.0 - (pos[1] - low[1]) * scale,
+            ]
+        };
+        let mut image = image::RgbImage::from_pixel(width, height, image::Rgb([34, 36, 44]));
+        for triangle in scene.triangles.chunks_exact(3) {
+            let points = [
+                to_pixel(triangle[0].pos),
+                to_pixel(triangle[1].pos),
+                to_pixel(triangle[2].pos),
+            ];
+            let min_x = points
+                .iter()
+                .map(|p| p[0])
+                .fold(f32::INFINITY, f32::min)
+                .floor()
+                .max(0.0) as u32;
+            let max_x = points
+                .iter()
+                .map(|p| p[0])
+                .fold(f32::NEG_INFINITY, f32::max)
+                .ceil()
+                .min(width as f32 - 1.0) as u32;
+            let min_y = points
+                .iter()
+                .map(|p| p[1])
+                .fold(f32::INFINITY, f32::min)
+                .floor()
+                .max(0.0) as u32;
+            let max_y = points
+                .iter()
+                .map(|p| p[1])
+                .fold(f32::NEG_INFINITY, f32::max)
+                .ceil()
+                .min(height as f32 - 1.0) as u32;
+            let denominator = (points[1][1] - points[2][1]) * (points[0][0] - points[2][0])
+                + (points[2][0] - points[1][0]) * (points[0][1] - points[2][1]);
+            if denominator.abs() < 1e-9 {
+                continue;
+            }
+            for y in min_y..=max_y {
+                for x in min_x..=max_x {
+                    let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+                    let a = ((points[1][1] - points[2][1]) * (px - points[2][0])
+                        + (points[2][0] - points[1][0]) * (py - points[2][1]))
+                        / denominator;
+                    let b = ((points[2][1] - points[0][1]) * (px - points[2][0])
+                        + (points[0][0] - points[2][0]) * (py - points[2][1]))
+                        / denominator;
+                    let c = 1.0 - a - b;
+                    if a < -0.001 || b < -0.001 || c < -0.001 {
+                        continue;
+                    }
+                    let mix = |channel: usize| {
+                        a * triangle[0].color[channel]
+                            + b * triangle[1].color[channel]
+                            + c * triangle[2].color[channel]
+                    };
+                    let alpha = mix(3).clamp(0.0, 1.0);
+                    let pixel = image.get_pixel_mut(x, y);
+                    for channel in 0..3 {
+                        let source = mix(channel).clamp(0.0, 1.0) * 255.0;
+                        pixel.0[channel] =
+                            (pixel.0[channel] as f32 * (1.0 - alpha) + source * alpha) as u8;
+                    }
+                }
+            }
+        }
+        image.save(path).expect("write png");
+    }
+
+    /// `TEKKCAM_RENDER_OUT=<dir> cargo test --lib render_debug_images -- --ignored`
+    #[test]
+    #[ignore]
+    fn render_debug_images() {
+        use crate::cam::{adaptive, operations::Operation};
+        use crate::workspace::model::{MeshBody, StepLengthUnit};
+        let out = std::env::var("TEKKCAM_RENDER_OUT").unwrap_or_else(|_| ".".into());
+        // Two stacked blocks (a stepped part) so there is relief to light.
+        let mut vertices = Vec::new();
+        let mut triangles = Vec::new();
+        for (lo, hi, top) in [(14.0_f32, 46.0, 6.0), (24.0, 36.0, 12.0)] {
+            let base = vertices.len() as u32;
+            vertices.extend([
+                [lo, lo, 0.0],
+                [hi, lo, 0.0],
+                [hi, hi, 0.0],
+                [lo, hi, 0.0],
+                [lo, lo, top],
+                [hi, lo, top],
+                [hi, hi, top],
+                [lo, hi, top],
+            ]);
+            for t in [
+                [0, 2, 1],
+                [0, 3, 2],
+                [4, 5, 6],
+                [4, 6, 7],
+                [0, 1, 5],
+                [0, 5, 4],
+                [1, 2, 6],
+                [1, 6, 5],
+                [2, 3, 7],
+                [2, 7, 6],
+                [3, 0, 4],
+                [3, 4, 7],
+            ] {
+                triangles.push([base + t[0], base + t[1], base + t[2]]);
+            }
+        }
+        let count = triangles.len();
+        let model = Model {
+            name: "stepped".into(),
+            source_path: "fixture".into(),
+            visible: true,
+            source_schema: vec![],
+            source_unit: StepLengthUnit::Millimeter,
+            units_are_millimeters: true,
+            transform: Default::default(),
+            vertices,
+            triangles,
+            bodies: vec![MeshBody {
+                name: "stepped".into(),
+                source_item_id: 1,
+                first_triangle: 0,
+                triangle_count: count,
+                triangle_face_ids: (1..=count as u64).collect(),
+                transform: [[1., 0., 0., 0.], [0., 1., 0., 0.], [0., 0., 1., 0.]],
+                bounds: [[14., 14., 0.], [46., 46., 12.]],
+            }],
+            bounds: [[14., 14., 0.], [46., 46., 12.]],
+            import_notes: vec![],
+        };
+        let setup = MachiningSetup {
+            stock_size_mm: [60.0, 60.0, 14.0],
+            path_tolerance_mm: 0.5,
+            ..MachiningSetup::default()
+        };
+        crate::renderer::lighting::set_target_is_srgb(false);
+        let build_at =
+            |operations: &[Operation], removal: bool, material: StockMaterial, orbit: [f32; 2]| {
+                Scene::build(
+                    &[],
+                    std::slice::from_ref(&model),
+                    operations,
+                    0,
+                    true,
+                    orbit,
+                    Some(0),
+                    &[],
+                    false,
+                    &setup,
+                    removal,
+                    true,
+                    material,
+                    None,
+                )
+            };
+        let build = |operations: &[Operation], removal: bool, material: StockMaterial| {
+            build_at(operations, removal, material, [-0.35, 0.05])
+        };
+        rasterise(
+            &build(&[], false, StockMaterial::Aluminum),
+            &format!("{out}/model.png"),
+        );
+
+        let tool = crate::cam::tool::Tool {
+            diameter_mm: 4.0,
+            flute_length_mm: 15.0,
+            stickout_mm: 30.0,
+            ..Default::default()
+        };
+        let params = adaptive::AdaptiveParams::conservative(&setup, &tool, 0.0);
+        let path = adaptive::generate(&model, &setup, &tool, &params).expect("roughing");
+        let mut operation = Operation::roughing_3d();
+        operation.tool = tool;
+        operation.generated = true;
+        operation.toolpath = path;
+        rasterise(
+            &build(&[operation.clone()], true, StockMaterial::Wood),
+            &format!("{out}/wood_removal.png"),
+        );
+        rasterise(
+            &build(&[operation.clone()], true, StockMaterial::Aluminum),
+            &format!("{out}/aluminum_removal.png"),
+        );
+        rasterise(
+            &build_at(
+                &[operation.clone()],
+                true,
+                StockMaterial::Aluminum,
+                [1.6, 0.05],
+            ),
+            &format!("{out}/aluminum_removal_back.png"),
+        );
+        rasterise(
+            &build_at(&[operation], true, StockMaterial::Aluminum, [-0.35, 0.7]),
+            &format!("{out}/aluminum_removal_high.png"),
+        );
+    }
+
+    #[test]
+    fn view_direction_points_at_the_viewer_and_agrees_with_front_facing() {
+        for orbit in [[0.0, 0.0], [-0.35, 0.05], [1.6, 0.4], [3.0, -0.2]] {
+            let toward = view_direction(orbit);
+            let length = toward.iter().map(|c| c * c).sum::<f32>().sqrt();
+            assert!((length - 1.0).abs() < 1e-4);
+            // Nearer points have a smaller camera depth.
+            let near = camera_point([toward[0], toward[1], toward[2]], orbit)[2];
+            let far = camera_point([-toward[0], -toward[1], -toward[2]], orbit)[2];
+            assert!(near < far);
+            // A triangle whose normal faces the viewer is front-facing.
+            let up = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+            let facing = face_normal(up)[2] * toward[2] > 0.0;
+            assert_eq!(is_front_facing(up, orbit), facing);
+        }
+    }
+
+    #[test]
+    fn large_triangles_are_split_without_changing_their_area() {
+        let big = [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 10.0, 0.0]];
+        let mut pieces = vec![big];
+        split_large_triangles(&mut pieces, 3.0, 4);
+        assert!(pieces.len() > 4);
+        let area = |t: &[[f32; 3]; 3]| {
+            let n = face_normal(*t);
+            0.5 * (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt()
+        };
+        let total: f32 = pieces.iter().map(area).sum();
+        assert!((total - area(&big)).abs() < 1e-3);
+        // Small triangles are left alone.
+        let mut small = vec![[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]];
+        split_large_triangles(&mut small, 3.0, 4);
+        assert_eq!(small.len(), 1);
+    }
+
+    #[test]
+    fn every_operation_toolpath_gets_its_own_colour() {
+        use crate::cam::operations::{operation_color, Operation};
+        let mut operations = Vec::new();
+        for shift in [0.0, 10.0] {
+            let mut operation = Operation::contour();
+            operation.generated = true;
+            operation.toolpath.push_rapid([shift, 0.0], 5.0);
+            operation.toolpath.push_feed([shift, 0.0], -1.0, 100.0);
+            operation
+                .toolpath
+                .push_feed([shift + 5.0, 0.0], -1.0, 100.0);
+            operation.toolpath.push_rapid([shift + 5.0, 0.0], 5.0);
+            operations.push(operation);
+        }
+        let scene = Scene::build(
+            &[],
+            &[],
+            &operations,
+            0,
+            false,
+            [0.0, 0.0],
+            None,
+            &[],
+            false,
+            &MachiningSetup::default(),
+            false,
+            false,
+            StockMaterial::default(),
+            None,
+        );
+        // Opaque (feed) vertices carry the operation colour; rapids are faint.
+        let feed_colors: Vec<[f32; 3]> = scene
+            .toolpaths
+            .iter()
+            .filter(|vertex| vertex.color[3] > 0.9)
+            .map(|vertex| [vertex.color[0], vertex.color[1], vertex.color[2]])
+            .collect();
+        assert!(feed_colors.contains(&operation_color(0)));
+        assert!(feed_colors.contains(&operation_color(1)));
+        assert_ne!(operation_color(0), operation_color(1));
+        assert!(scene.toolpaths.iter().any(|vertex| vertex.color[3] < 0.5));
+    }
+
+    #[test]
+    fn hidden_operations_are_not_drawn_but_keep_their_colour_slot() {
+        use crate::cam::operations::{operation_color, Operation};
+        let mut operations = Vec::new();
+        for shift in [0.0, 10.0] {
+            let mut operation = Operation::contour();
+            operation.generated = true;
+            operation.toolpath.push_rapid([shift, 0.0], 5.0);
+            operation.toolpath.push_feed([shift, 0.0], -1.0, 100.0);
+            operation
+                .toolpath
+                .push_feed([shift + 5.0, 0.0], -1.0, 100.0);
+            operations.push(operation);
+        }
+        operations[0].visible = false;
+        let scene = Scene::build(
+            &[],
+            &[],
+            &operations,
+            0,
+            false,
+            [0.0, 0.0],
+            None,
+            &[],
+            false,
+            &MachiningSetup::default(),
+            false,
+            false,
+            StockMaterial::default(),
+            None,
+        );
+        let colors: Vec<[f32; 3]> = scene
+            .toolpaths
+            .iter()
+            .map(|vertex| [vertex.color[0], vertex.color[1], vertex.color[2]])
+            .collect();
+        assert!(!colors.is_empty());
+        // Only the second operation is drawn, still in its own (second) colour.
+        assert!(colors.iter().all(|color| *color == operation_color(1)));
+    }
+
+    #[test]
+    fn axis_triad_stays_centered_on_the_stock_top() {
+        let orbit = [0.3, 0.1];
+        let mut setup = MachiningSetup::default();
+        for (origin, size) in [
+            ([0.0, 0.0, 0.0], [100.0, 100.0, 20.0]),
+            ([-40.0, 25.0, -5.0], [300.0, 40.0, 12.0]),
+        ] {
+            setup.stock_origin_mm = origin;
+            setup.stock_size_mm = size;
+            let scene = Scene::build(
+                &[],
+                &[],
+                &[],
+                0,
+                true,
+                orbit,
+                None,
+                &[],
+                false,
+                &setup,
+                false,
+                false,
+                StockMaterial::default(),
+                None,
+            );
+            let top = match setup.axis {
+                WorkAxis::ZUp => origin[2] + size[2],
+                WorkAxis::ZDown => origin[2],
+            };
+            let expected = project_point(
+                (origin[0] + size[0] * 0.5) as f32,
+                (origin[1] + size[1] * 0.5) as f32,
+                top as f32,
+                true,
+                orbit,
+            );
+            // Every axis line starts at the stock-top centre.
+            for color in [
+                [0.95, 0.3, 0.3, 1.0],
+                [0.35, 0.85, 0.4, 1.0],
+                [0.35, 0.6, 1.0, 1.0],
+            ] {
+                let start = scene
+                    .lines
+                    .iter()
+                    .find(|vertex| vertex.color == color)
+                    .expect("axis line present")
+                    .pos;
+                assert!((start[0] - expected[0]).abs() < 1e-3);
+                assert!((start[1] - expected[1]).abs() < 1e-3);
+            }
+        }
     }
 }
 

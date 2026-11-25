@@ -13,6 +13,10 @@ pub struct SurfaceSample {
 /// STEP import tessellation; this does not query the original exact B-rep.
 pub struct MeshQuery<'a> {
     model: &'a Model,
+    /// Model vertices with the model transform already applied. Computed once:
+    /// the transform involves trigonometry and this is read for every triangle
+    /// of every query.
+    vertices: Vec<[f64; 3]>,
     buckets: Vec<Vec<usize>>,
     global_triangles: Vec<usize>,
     bucket_dim: usize,
@@ -31,8 +35,13 @@ impl<'a> MeshQuery<'a> {
             (bounds[1][1] as f64 - xy_min[1]).max(1e-9),
         ];
         let cell_size = [extent[0] / bucket_dim as f64, extent[1] / bucket_dim as f64];
+        let vertices = (0..model.vertices.len())
+            .filter_map(|index| model.transformed_vertex(index))
+            .map(|v| [v[0] as f64, v[1] as f64, v[2] as f64])
+            .collect();
         let mut query = Self {
             model,
+            vertices,
             buckets: vec![Vec::new(); bucket_dim * bucket_dim],
             global_triangles: Vec::new(),
             bucket_dim,
@@ -66,16 +75,51 @@ impl<'a> MeshQuery<'a> {
         query
     }
 
+    /// The model this query reads.
+    pub fn model(&self) -> &'a Model {
+        self.model
+    }
+
+    /// Model vertices with the model transform applied.
+    pub fn vertices(&self) -> &[[f64; 3]] {
+        &self.vertices
+    }
+
     /// Return the highest tessellated surface directly above an XY location.
     pub fn height_at_xy(&self, x: f64, y: f64) -> Option<SurfaceSample> {
-        self.surface_samples_at_xy(x, y)
-            .into_iter()
-            .max_by(|a, b| a.height.total_cmp(&b.height))
+        // Hot path of every gouge and holder check: no allocation, and the
+        // face id is only looked up for the surface that wins.
+        let mut best: Option<(f64, [f64; 3], usize)> = None;
+        self.visit_surface_hits(x, y, |height, normal, triangle_index| {
+            if best.is_none_or(|(highest, _, _)| height >= highest) {
+                best = Some((height, normal, triangle_index));
+            }
+        });
+        best.map(|(height, normal, triangle_index)| SurfaceSample {
+            height,
+            normal,
+            triangle_index,
+            source_face_id: self.source_face_id(triangle_index),
+        })
     }
 
     /// Return all non-vertical triangle intersections along the positive Z ray.
     pub fn surface_samples_at_xy(&self, x: f64, y: f64) -> Vec<SurfaceSample> {
         let mut samples = Vec::new();
+        self.visit_surface_hits(x, y, |height, normal, triangle_index| {
+            samples.push(SurfaceSample {
+                height,
+                normal,
+                triangle_index,
+                source_face_id: self.source_face_id(triangle_index),
+            });
+        });
+        samples
+    }
+
+    /// Call `visit(height, unit normal, triangle index)` for every non-vertical
+    /// triangle whose XY projection contains the point.
+    fn visit_surface_hits(&self, x: f64, y: f64, mut visit: impl FnMut(f64, [f64; 3], usize)) {
         let bucket = self.bucket_index(x, y);
         for triangle_index in self
             .global_triangles
@@ -102,14 +146,12 @@ impl<'a> MeshQuery<'a> {
             if !z.is_finite() || !inside_xy_triangle([x, y], a, b, c) {
                 continue;
             }
-            samples.push(SurfaceSample {
-                height: z,
-                normal: [normal[0] / length, normal[1] / length, normal[2] / length],
+            visit(
+                z,
+                [normal[0] / length, normal[1] / length, normal[2] / length],
                 triangle_index,
-                source_face_id: self.source_face_id(triangle_index),
-            });
+            );
         }
-        samples
     }
 
     /// Point containment by ray casting. This is reliable for closed meshes;
@@ -165,9 +207,7 @@ impl<'a> MeshQuery<'a> {
     }
 
     fn vertex(&self, index: u32) -> Option<[f64; 3]> {
-        self.model
-            .transformed_vertex(index as usize)
-            .map(|v| [v[0] as f64, v[1] as f64, v[2] as f64])
+        self.vertices.get(index as usize).copied()
     }
 
     fn bucket_coord(&self, axis: usize, value: f64) -> usize {

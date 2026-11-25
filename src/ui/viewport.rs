@@ -91,44 +91,26 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                     )
                 };
                 let painter = ui.painter_at(rect);
-                let tool_diameter = app
-                    .ui_state
-                    .selected_operation
-                    .and_then(|index| app.project.operations.get(index))
-                    .map(|operation| operation.tool.diameter_mm as f32)
-                    .unwrap_or(app.project.default_tool.diameter_mm as f32);
-                let radius = if app.ui_state.show_3d_view {
-                    (tool_diameter * app.camera.zoom * 0.5).clamp(4.0, 16.0)
-                } else {
-                    5.0
-                };
-                if app.ui_state.show_3d_view {
-                    let tool = app
-                        .ui_state
+                // The tool that is running this move (each operation has its own).
+                let tool = crate::gcode::simulator::tool_at(
+                    &app.ui_state.simulation_ranges,
+                    app.ui_state.simulator.move_index,
+                )
+                .cloned()
+                .or_else(|| {
+                    app.ui_state
                         .selected_operation
                         .and_then(|index| app.project.operations.get(index))
-                        .map(|operation| &operation.tool)
-                        .unwrap_or(&app.project.default_tool);
-                    let tip = [world_xy[0] as f32, world_xy[1] as f32, world_z as f32];
-                    let shaft_end = [tip[0], tip[1], tip[2] + tool.stickout_mm as f32];
-                    let projected = crate::renderer::pipeline::project_view_point(
-                        shaft_end,
-                        app.ui_state.model_orbit,
-                    );
-                    let shaft_screen = egui::pos2(
-                        rect.center().x + (projected[0] - app.camera.pan.x) * app.camera.zoom,
-                        rect.center().y - (projected[1] - app.camera.pan.y) * app.camera.zoom,
-                    );
-                    painter.line_segment(
-                        [screen, shaft_screen],
-                        egui::Stroke::new(3.0_f32, egui::Color32::from_rgb(190, 195, 205)),
-                    );
-                }
-                painter.circle_filled(screen, radius, egui::Color32::from_rgb(255, 75, 55));
-                painter.circle_stroke(
+                        .map(|operation| operation.tool.clone())
+                })
+                .unwrap_or_else(|| app.project.default_tool.clone());
+                paint_simulated_tool(
+                    &painter,
+                    app,
+                    rect,
+                    &tool,
+                    [world_xy[0] as f32, world_xy[1] as f32, world_z as f32],
                     screen,
-                    radius + 3.0,
-                    egui::Stroke::new(1.5_f32, egui::Color32::WHITE),
                 );
             }
 
@@ -883,6 +865,8 @@ fn show_zoom_controls(ctx: &egui::Context, app: &mut TekkCamApp, rect: egui::Rec
 }
 
 const ICON_CUBE_OUTLINE: char = '\u{F01A7}';
+/// Material Design "rotate-right" glyph from the bundled Nerd Fonts icon font.
+const ICON_ROTATE_RIGHT: char = '\u{F0467}';
 
 fn is_step_model(source_path: &str) -> bool {
     std::path::Path::new(source_path)
@@ -1015,6 +999,7 @@ fn sync_scene(app: &mut TekkCamApp, orbit_preview: bool) {
             crate::renderer::pipeline::SimulationProgress {
                 moves: &app.ui_state.simulation_moves,
                 state: &app.ui_state.simulator,
+                ranges: &app.ui_state.simulation_ranges,
             },
         );
         app.scene = Arc::new(Scene::build(
@@ -1132,21 +1117,21 @@ fn handle_camera_input(ui: &mut egui::Ui, app: &mut TekkCamApp, rect: egui::Rect
         .placing_text_layer
         .filter(|&index| app.project.layers.get(index).is_some());
     let primary_down = ui.input(|input| input.pointer.button_down(egui::PointerButton::Primary));
-    if primary_down || response.drag_started_by(egui::PointerButton::Primary) {
+    // Resize handles exist only while a text layer is in its moving state
+    // (rotation is driven by the rotate button drawn with the outline).
+    if (primary_down || response.drag_started_by(egui::PointerButton::Primary))
+        && app.ui_state.text_resize.is_none()
+        && app.ui_state.text_rotate.is_none()
+    {
         if let (Some(index), Some(pointer)) = (
-            app.ui_state
-                .placing_text_layer
-                .or(app.ui_state.selected_layer)
-                .filter(|&index| {
-                    app.project.layers.get(index).is_some_and(|layer| {
-                        layer.visible && layer.kind == crate::workspace::layer::LayerKind::Text
-                    })
-                }),
+            placing_text.filter(|&index| {
+                app.project.layers.get(index).is_some_and(|layer| {
+                    layer.visible && layer.kind == crate::workspace::layer::LayerKind::Text
+                })
+            }),
             response.interact_pointer_pos(),
         ) {
-            if let Some(state) = text_rotate_state_at_pointer(app, index, pointer, rect) {
-                app.ui_state.text_rotate = Some(state);
-            } else if let Some(state) = text_resize_state_at_pointer(app, index, pointer, rect) {
+            if let Some(state) = text_resize_state_at_pointer(app, index, pointer, rect) {
                 app.ui_state.text_resize = Some(state);
             }
         }
@@ -1177,22 +1162,24 @@ fn handle_camera_input(ui: &mut egui::Ui, app: &mut TekkCamApp, rect: egui::Rect
             app.ui_state.status_message = "Text resized".into();
         }
     }
-    if app.ui_state.text_resize.is_some() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
+    if let Some(resize) = &app.ui_state.text_resize {
+        let cursor = resize_cursor(app, resize.initial_handle, resize.anchor, rect);
+        ui.ctx().set_cursor_icon(cursor);
     } else if app.ui_state.text_rotate.is_some() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-    } else if let (Some(index), Some(pointer)) = (
-        app.ui_state.placing_text_layer,
-        ui.input(|input| input.pointer.hover_pos()),
-    ) {
+    } else if let (Some(index), Some(pointer)) =
+        (placing_text, ui.input(|input| input.pointer.hover_pos()))
+    {
         if app
             .project
             .layers
             .get(index)
             .is_some_and(|layer| layer.kind == crate::workspace::layer::LayerKind::Text)
-            && text_resize_state_at_pointer(app, index, pointer, rect).is_some()
         {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
+            if let Some(state) = text_resize_state_at_pointer(app, index, pointer, rect) {
+                let cursor = resize_cursor(app, state.initial_handle, state.anchor, rect);
+                ui.ctx().set_cursor_icon(cursor);
+            }
         }
     }
     let mut text_double_click = false;
@@ -1379,45 +1366,53 @@ fn text_resize_state_at_pointer(
 ) -> Option<crate::app::TextResizeState> {
     let layer = app.project.layers.get(index)?;
     let (min, max) = layer.geometry.bounds()?;
-    let handle_world = [max[0], min[1]];
-    let handle_screen = text_world_to_screen(app, handle_world, viewport);
-    if handle_screen.distance(pointer) > 10.0 {
-        return None;
-    }
+    // Pick the corner handle closest to the pointer; the opposite corner stays
+    // fixed so the layer scales proportionally away from it.
+    let (handle_world, anchor) = text_resize_corners(min, max)
+        .into_iter()
+        .map(|(handle, anchor)| (text_world_to_screen(app, handle, viewport), handle, anchor))
+        .filter(|(screen, _, _)| screen.distance(pointer) <= TEXT_HANDLE_HIT_RADIUS)
+        .min_by(|a, b| {
+            a.0.distance(pointer)
+                .partial_cmp(&b.0.distance(pointer))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(_, handle, anchor)| (handle, anchor))?;
     Some(crate::app::TextResizeState {
         layer_index: index,
         original_geometry: layer.geometry.clone(),
-        anchor: [min[0], max[1]],
+        anchor,
         initial_handle: handle_world,
         original_height_mm: layer.text_data.as_ref().map(|data| data.height_mm),
     })
 }
 
-fn text_rotate_state_at_pointer(
+const TEXT_HANDLE_HIT_RADIUS: f32 = 10.0;
+
+/// Corner handles of a layer's bounds, each paired with the opposite corner.
+fn text_resize_corners(min: [f32; 2], max: [f32; 2]) -> [([f32; 2], [f32; 2]); 4] {
+    [
+        ([min[0], min[1]], [max[0], max[1]]),
+        ([max[0], min[1]], [min[0], max[1]]),
+        ([max[0], max[1]], [min[0], min[1]]),
+        ([min[0], max[1]], [max[0], min[1]]),
+    ]
+}
+
+/// Diagonal resize cursor matching the on-screen direction of a corner handle.
+fn resize_cursor(
     app: &TekkCamApp,
-    index: usize,
-    pointer: egui::Pos2,
+    handle: [f32; 2],
+    anchor: [f32; 2],
     viewport: egui::Rect,
-) -> Option<crate::app::TextRotateState> {
-    let layer = app.project.layers.get(index)?;
-    let (min, max) = layer.geometry.bounds()?;
-    let handle = text_world_to_screen(app, [(min[0] + max[0]) * 0.5, max[1]], viewport)
-        + egui::vec2(0.0, -22.0);
-    if handle.distance(pointer) > 10.0 {
-        return None;
+) -> egui::CursorIcon {
+    let delta =
+        text_world_to_screen(app, handle, viewport) - text_world_to_screen(app, anchor, viewport);
+    if delta.x * delta.y >= 0.0 {
+        egui::CursorIcon::ResizeNwSe
+    } else {
+        egui::CursorIcon::ResizeNeSw
     }
-    let center = [(min[0] + max[0]) * 0.5, (min[1] + max[1]) * 0.5];
-    let cursor = screen_to_text_world(app, pointer, viewport);
-    Some(crate::app::TextRotateState {
-        layer_index: index,
-        original_geometry: layer.geometry.clone(),
-        center,
-        initial_angle: (cursor.y - center[1]).atan2(cursor.x - center[0]),
-        initial_rotation_degrees: layer
-            .text_data
-            .as_ref()
-            .map_or(0.0, |data| data.rotation_degrees),
-    })
 }
 
 fn rotate_text_layer(app: &mut TekkCamApp, rotate: &crate::app::TextRotateState, cursor: [f32; 2]) {
@@ -1547,16 +1542,27 @@ fn show_text_placement_outline(ui: &egui::Ui, app: &mut TekkCamApp, viewport: eg
         .get(index)
         .is_some_and(|layer| layer.kind == crate::workspace::layer::LayerKind::Text)
     {
-        let handle = text_world_to_screen(app, [max[0], min[1]], viewport);
-        let handle_rect = egui::Rect::from_center_size(handle, egui::vec2(8.0, 8.0));
-        painter.rect_filled(handle_rect, 1.0, egui::Color32::WHITE);
-        painter.rect_stroke(
-            handle_rect,
-            egui::CornerRadius::same(1),
-            egui::Stroke::new(1.0_f32, accent),
-            egui::StrokeKind::Inside,
+        // Resize handles on all four corners of the layer bounds.
+        for (corner, _) in text_resize_corners(min, max) {
+            let handle = text_world_to_screen(app, corner, viewport);
+            let handle_rect = egui::Rect::from_center_size(handle, egui::vec2(9.0, 9.0));
+            painter.rect_filled(handle_rect, 1.0, egui::Color32::WHITE);
+            painter.rect_stroke(
+                handle_rect,
+                egui::CornerRadius::same(1),
+                egui::Stroke::new(1.5_f32, accent),
+                egui::StrokeKind::Inside,
+            );
+        }
+        // Rotate button sits above the layer, joined to it by a short stem.
+        painter.line_segment(
+            [
+                egui::pos2(bounds.center().x, bounds.top()),
+                egui::pos2(bounds.center().x, bounds.top() - 12.0),
+            ],
+            egui::Stroke::new(1.5_f32, accent),
         );
-        let button_pos = egui::pos2(bounds.center().x, bounds.top() - 14.0);
+        let button_pos = egui::pos2(bounds.center().x, bounds.top() - 24.0);
         egui::Area::new(egui::Id::new("text_rotate_button"))
             .order(egui::Order::Foreground)
             .fixed_pos(button_pos)
@@ -1565,8 +1571,17 @@ fn show_text_placement_outline(ui: &egui::Ui, app: &mut TekkCamApp, viewport: eg
                 let response = ui
                     .add_sized(
                         egui::vec2(24.0, 24.0),
-                        egui::Button::new(egui::RichText::new("⟳").size(16.0))
-                            .sense(egui::Sense::click_and_drag()),
+                        egui::Button::new(
+                            egui::RichText::new(ICON_ROTATE_RIGHT.to_string())
+                                .font(egui::FontId::new(
+                                    16.0,
+                                    egui::FontFamily::Name("sidebar_icons".into()),
+                                ))
+                                .color(egui::Color32::WHITE),
+                        )
+                        .fill(accent)
+                        .corner_radius(egui::CornerRadius::same(12))
+                        .sense(egui::Sense::click_and_drag()),
                     )
                     .on_hover_cursor(egui::CursorIcon::Grab)
                     .on_hover_text("Drag to rotate text");
@@ -1784,5 +1799,166 @@ fn overlay_info(ui: &mut egui::Ui, app: &mut TekkCamApp, rect: egui::Rect) {
         hint,
         egui::FontId::proportional(10.0),
         egui::Color32::from_rgba_premultiplied(120, 120, 140, 160),
+    );
+}
+
+/// Draw the cutter at its simulated position, built from the tool's real
+/// dimensions: diameter, flute length, corner profile (flat / ball / bull nose),
+/// shank up to the stickout, and a collet above it.
+fn paint_simulated_tool(
+    painter: &egui::Painter,
+    app: &TekkCamApp,
+    rect: egui::Rect,
+    tool: &crate::cam::tool::Tool,
+    tip: [f32; 3],
+    tip_screen: egui::Pos2,
+) {
+    let zoom = app.camera.zoom;
+    let pixel_diameter = tool.diameter_mm as f32 * zoom;
+    let marker = |radius: f32| {
+        painter.circle_filled(tip_screen, radius, egui::Color32::from_rgb(255, 75, 55));
+        painter.circle_stroke(
+            tip_screen,
+            radius + 2.5,
+            egui::Stroke::new(1.5_f32, egui::Color32::WHITE),
+        );
+    };
+    if !app.ui_state.show_3d_view {
+        // Top view: the cutter's true footprint.
+        let radius = (pixel_diameter * 0.5).max(3.0);
+        painter.circle_filled(
+            tip_screen,
+            radius,
+            egui::Color32::from_rgba_unmultiplied(255, 75, 55, 90),
+        );
+        painter.circle_stroke(
+            tip_screen,
+            radius,
+            egui::Stroke::new(1.5_f32, egui::Color32::WHITE),
+        );
+        marker(2.5);
+        return;
+    }
+    if pixel_diameter < 5.0 {
+        // Too small to see as a solid: keep a visible marker.
+        marker(4.0);
+        return;
+    }
+
+    let orbit = app.ui_state.model_orbit;
+    let to_screen = |point: [f32; 3]| {
+        let projected = crate::renderer::pipeline::project_view_point(point, orbit);
+        egui::pos2(
+            rect.center().x + (projected[0] - app.camera.pan.x) * zoom,
+            rect.center().y - (projected[1] - app.camera.pan.y) * zoom,
+        )
+    };
+    let radius = (tool.diameter_mm * 0.5) as f32;
+    let corner = match tool.shape {
+        crate::cam::tool::ToolShape::Flat => 0.0,
+        crate::cam::tool::ToolShape::BallNose => radius,
+        crate::cam::tool::ToolShape::BullNose => (tool.corner_radius_mm as f32).clamp(0.0, radius),
+    };
+    let flute = tool.flute_length_mm as f32;
+    let stickout = tool.stickout_mm.max(tool.flute_length_mm) as f32;
+    let collet_radius = (radius + tool.holder_clearance_mm as f32).max(radius * 1.9);
+    let collet_height = (radius * 5.0).clamp(6.0, 24.0);
+
+    // Profile from the tip upward: (radius, height above tip, part).
+    // Parts: 0 = cutting flutes, 1 = shank, 2 = collet.
+    let mut profile: Vec<(f32, f32, u8)> = vec![(0.0, 0.0, 0)];
+    if corner > 0.0 {
+        for step in 0..=6 {
+            let angle = step as f32 * std::f32::consts::FRAC_PI_2 / 6.0;
+            profile.push((
+                radius - corner + corner * angle.sin(),
+                corner - corner * angle.cos(),
+                0,
+            ));
+        }
+    } else {
+        profile.push((radius, 0.0, 0));
+    }
+    profile.push((radius, flute.max(corner), 0));
+    profile.push((radius, stickout.max(flute), 1));
+    profile.push((collet_radius, stickout.max(flute), 2));
+    profile.push((collet_radius, stickout.max(flute) + collet_height, 2));
+
+    const SIDES: usize = 20;
+    let view = crate::renderer::pipeline::view_direction(orbit);
+    let light = {
+        let v = [0.35_f32, -0.45, 0.82];
+        let length = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        v.map(|c| c / length)
+    };
+    let mut quads: Vec<(f32, [egui::Pos2; 4], egui::Color32)> = Vec::new();
+    for pair in profile.windows(2) {
+        let ((r0, h0, _), (r1, h1, part)) = (pair[0], pair[1]);
+        let (dr, dh) = (r1 - r0, h1 - h0);
+        let length = dr.hypot(dh);
+        if length < 1e-5 {
+            continue;
+        }
+        // Outward normal of this profile segment as (radial, vertical).
+        let (nr, nz) = (dh / length, -dr / length);
+        let base = match part {
+            0 => [0.80, 0.82, 0.86],
+            1 => [0.62, 0.64, 0.69],
+            _ => [0.30, 0.31, 0.35],
+        };
+        for side in 0..SIDES {
+            let a0 = side as f32 * std::f32::consts::TAU / SIDES as f32;
+            let a1 = (side + 1) as f32 * std::f32::consts::TAU / SIDES as f32;
+            let mid = (a0 + a1) * 0.5;
+            let normal = [nr * mid.cos(), nr * mid.sin(), nz];
+            let facing = normal[0] * view[0] + normal[1] * view[1] + normal[2] * view[2];
+            if facing <= 0.0 {
+                continue;
+            }
+            let ring = |radius: f32, height: f32, angle: f32| {
+                [
+                    tip[0] + radius * angle.cos(),
+                    tip[1] + radius * angle.sin(),
+                    tip[2] + height,
+                ]
+            };
+            let corners = [
+                ring(r0, h0, a0),
+                ring(r0, h0, a1),
+                ring(r1, h1, a1),
+                ring(r1, h1, a0),
+            ];
+            let lit = (normal[0] * light[0] + normal[1] * light[1] + normal[2] * light[2]).max(0.0);
+            let shade = 0.32 + 0.68 * (0.55 * lit + 0.45 * facing);
+            let color = egui::Color32::from_rgb(
+                (base[0] * shade * 255.0).min(255.0) as u8,
+                (base[1] * shade * 255.0).min(255.0) as u8,
+                (base[2] * shade * 255.0).min(255.0) as u8,
+            );
+            let center = [
+                (corners[0][0] + corners[2][0]) * 0.5,
+                (corners[0][1] + corners[2][1]) * 0.5,
+                (corners[0][2] + corners[2][2]) * 0.5,
+            ];
+            quads.push((
+                crate::renderer::pipeline::view_depth(center, orbit),
+                corners.map(to_screen),
+                color,
+            ));
+        }
+    }
+    quads.sort_by(|a, b| b.0.total_cmp(&a.0));
+    for (_, points, color) in quads {
+        painter.add(egui::Shape::convex_polygon(
+            points.to_vec(),
+            color,
+            egui::Stroke::new(0.4_f32, color),
+        ));
+    }
+    // Keep the tip easy to find.
+    painter.circle_stroke(
+        tip_screen,
+        2.5,
+        egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(255, 75, 55)),
     );
 }

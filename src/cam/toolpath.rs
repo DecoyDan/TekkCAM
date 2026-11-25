@@ -111,6 +111,34 @@ impl Toolpath {
         self.moves = simplified;
         Ok(())
     }
+    /// Total length (mm) of all cutting moves, treating arcs as chords.
+    pub fn feed_length_mm(&self) -> f64 {
+        let mut position: Option<[f64; 3]> = None;
+        let mut length = 0.0;
+        for movement in &self.moves {
+            match movement {
+                ToolMove::Rapid { to, z } => position = Some([to[0], to[1], *z]),
+                ToolMove::Feed { to, z, .. } | ToolMove::Arc { to, z, .. } => {
+                    let end = [to[0], to[1], *z];
+                    if let Some(start) = position {
+                        length += ((end[0] - start[0]).powi(2)
+                            + (end[1] - start[1]).powi(2)
+                            + (end[2] - start[2]).powi(2))
+                        .sqrt();
+                    }
+                    position = Some(end);
+                }
+                ToolMove::Drill {
+                    at, depth, retract, ..
+                } => {
+                    length += (retract - depth).abs();
+                    position = Some([at[0], at[1], *retract]);
+                }
+            }
+        }
+        length
+    }
+
     pub fn bounds(&self) -> Option<(Point, Point)> {
         let mut it = self.moves.iter().map(ToolMove::end);
         let first = it.next()?;
@@ -167,9 +195,44 @@ fn point_segment_distance(point: [f64; 3], a: [f64; 3], b: [f64; 3]) -> f64 {
         .sqrt()
 }
 
+/// Most samples a gouge/holder check may take along one path.
+pub const MAX_CHECK_SAMPLES: usize = 40_000;
+
+/// Spacing (mm) between samples of an approximate gouge or holder check.
+/// The check works on a tessellated mesh with a sampled cutter envelope, so
+/// sampling much finer than a fraction of the cutter radius adds cost but no
+/// accuracy; the spacing is also widened so a long path stays within
+/// [`MAX_CHECK_SAMPLES`] and the generator cannot appear to hang.
+pub fn check_spacing(requested_mm: f64, tool_radius_mm: f64, path_length_mm: f64) -> f64 {
+    let base = requested_mm.max((tool_radius_mm * 0.25).clamp(0.05, 0.4));
+    base.max(path_length_mm / MAX_CHECK_SAMPLES as f64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn check_spacing_is_bounded_by_the_sample_budget() {
+        // Fine requested spacing on a small cutter is raised to a useful floor.
+        assert!((check_spacing(0.02, 3.0, 100.0) - 0.4).abs() < 1e-12);
+        assert!((check_spacing(0.02, 0.1, 100.0) - 0.05).abs() < 1e-12);
+        // A very long path is spaced out to stay within the sample budget.
+        let long = 3_000_000.0;
+        assert!(long / check_spacing(0.02, 3.0, long) <= MAX_CHECK_SAMPLES as f64 + 1.0);
+        // A coarser request is respected.
+        assert!((check_spacing(1.0, 3.0, 10.0) - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn feed_length_counts_only_cutting_moves() {
+        let mut path = Toolpath::default();
+        path.push_rapid([0.0, 0.0], 5.0);
+        path.push_feed([0.0, 0.0], 0.0, 100.0);
+        path.push_feed([3.0, 4.0], 0.0, 100.0);
+        path.push_rapid([50.0, 50.0], 5.0);
+        assert!((path.feed_length_mm() - 10.0).abs() < 1e-9);
+    }
 
     #[test]
     fn simplification_respects_deviation_bound_and_preserves_rapid_boundaries() {
