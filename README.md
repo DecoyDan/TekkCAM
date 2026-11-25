@@ -7,6 +7,8 @@ The repository builds two executables:
 - `tekkcam-gui` — desktop application.
 - `tekkcam` — offline command-line tools for importing and inspecting projects, configuring setup and operations, validating jobs, and exporting G-code. The CLI does not connect to or move a machine.
 
+The desktop application can also plan a STEP part for you: **Auto Plan** picks the operations the part needs (roughing, helical bores for holes, steep/shallow finishing), generates every toolpath and shows each operation in its own colour. Holes are milled helically rather than drilled, and a dynamic stock check (switchable in the stock setup) replays the operations on the in-process stock to flag collisions.
+
 STEP machining uses imported tessellated geometry. Surface access, gouge and holder checks, and stock-removal estimates are approximate; see the project plan and CLI documentation for current limitations.
 
 Project site: [TekkCAM on GitHub Pages](https://risbern21.github.io/TekkCAM/).

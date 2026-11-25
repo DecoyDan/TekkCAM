@@ -1,8 +1,12 @@
+pub mod auto_plan;
+pub mod cancel;
 pub mod chain;
 pub mod finishing;
+pub mod helical;
 pub mod model_2d;
 pub mod operations;
 pub mod plugin;
 pub mod roughing;
+pub mod stock_model;
 pub mod tool;
 pub mod toolpath;

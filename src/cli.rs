@@ -1,9 +1,6 @@
 //! Offline command line workflows shared with the GUI's project and CAM code.
 use crate::{
-    cam::{finishing::FinishStrategy, operations::OperationKind},
-    gcode::generator,
-    importers,
-    workspace::project::Project,
+    cam::operations::OperationKind, gcode::generator, importers, workspace::project::Project,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -62,6 +59,7 @@ fn execute(args: Vec<String>) -> CliResult<()> {
         "operations" => operations_command(rest, json_output)?,
         "setup" => setup_command(rest, json_output)?,
         "generate" => generate_command(rest, json_output)?,
+        "plan" => plan_command(rest, json_output)?,
         _ => {
             return Err((
                 2,
@@ -84,7 +82,8 @@ Usage:\n\
   tekkcam operations add --project FILE --kind KIND [--name NAME] [--tool INDEX] [--json]\n\
   tekkcam operations set --project FILE --index N [--depth MM] [--stepdown MM] [--margin MM] [--ramp-angle DEG] [--peck MM] [--chip-break MM] [--stepover-ratio R] [--tool INDEX]\n\
   tekkcam operations reorder --project FILE --order 2,0,1 [--json]\n\
-  tekkcam generate --project FILE [--output FILE] [--json]\n\
+  tekkcam plan --project FILE [--fit-stock] [--roughing-tool MM] [--finishing-tool MM] [--steep-angle DEG] [--dynamic-stock on|off] [--gpu on|off|auto] [--json]\n\
+  tekkcam generate --project FILE [--output FILE] [--gpu on|off|auto] [--json]\n\
   tekkcam help | version\n\n\
 Import accepts Gerber, Excellon, DXF, SVG, and STEP files. Configure project setup, tools, and operations by editing the versioned .tkc JSON project; operation reordering writes the project back. Existing .tekkCAM and .json project files remain supported. Generate validates setup, creates configured 2D/3D toolpaths, validates machine limits when configured, then writes G-code. It never connects to a machine. JSON output is an object with schema_version: 1, command, and result.", env!("CARGO_PKG_VERSION"));
 }
@@ -332,6 +331,7 @@ fn operations_command(args: &[String], json_output: bool) -> CliResult<()> {
                 "isolation" => crate::cam::operations::Operation::isolation(),
                 "pocket" => crate::cam::operations::Operation::pocket(),
                 "drill" => crate::cam::operations::Operation::drill(),
+                "helical-bore" => crate::cam::operations::Operation::helical_bore(),
                 "contour" => crate::cam::operations::Operation::contour(),
                 "model-profile-2d" => crate::cam::operations::Operation::model_profile_2d(),
                 "roughing-3d" => crate::cam::operations::Operation::roughing_3d(),
@@ -458,7 +458,33 @@ fn operations_command(args: &[String], json_output: bool) -> CliResult<()> {
     }
 }
 
+/// `--gpu on|off|auto` (default auto): use the GPU for toolpath generation when
+/// an adapter is available, otherwise keep to the CPU.
+fn configure_gpu(args: &[String]) -> CliResult<()> {
+    let mode = match args.iter().position(|arg| arg == "--gpu") {
+        None => "auto",
+        Some(index) => args.get(index + 1).map(String::as_str).unwrap_or(""),
+    };
+    match mode {
+        "off" => crate::accel::set_gpu_enabled(false),
+        "auto" => {
+            let _ = crate::accel::install_headless();
+        }
+        "on" => {
+            crate::accel::install_headless().map_err(|error| {
+                (
+                    3,
+                    format!("--gpu on requested but no GPU is usable: {error}"),
+                )
+            })?;
+        }
+        _ => return Err((2, "--gpu must be 'on', 'off' or 'auto'".into())),
+    }
+    Ok(())
+}
+
 fn generate_command(args: &[String], json_output: bool) -> CliResult<()> {
+    configure_gpu(args)?;
     let path = option_path(args, "--project")?;
     let mut project = read_project(&path)?;
     let mut warnings = project.import_warnings.clone();
@@ -480,19 +506,15 @@ fn generate_command(args: &[String], json_output: bool) -> CliResult<()> {
                     3,
                     format!("operation '{}' requires an imported STEP model", op.name),
                 ))?;
-                let strategy = match op.kind {
-                    OperationKind::FinishRaster3D => FinishStrategy::Raster,
-                    OperationKind::FinishContour3D => FinishStrategy::ContourParallel,
-                    _ => FinishStrategy::Waterline,
-                };
-                crate::cam::finishing::generate(
-                    model,
-                    &project.setup,
-                    &op.tool,
-                    strategy,
-                    op.tool.diameter_mm * project.setup.stepover_percent / 100.0,
-                    op.margin_mm,
-                )
+                crate::cam::auto_plan::generate_finishing_operation(model, &project.setup, &op)
+            }
+            OperationKind::HelicalBore if !op.bores.is_empty() => {
+                let mut generated = op.clone();
+                generated
+                    .generate_from_geometry(&crate::workspace::object::Geometry::default())
+                    .map_err(|e| (3, format!("operation '{}': {e}", op.name)))?;
+                project.operations[index] = generated;
+                continue;
             }
             OperationKind::ModelProfile2D => {
                 let model = project
@@ -567,6 +589,94 @@ fn generate_command(args: &[String], json_output: bool) -> CliResult<()> {
     emit(
         "generate",
         json!({"output":output,"project":path,"operations_generated":generated_count,"dialect":project.post_dialect.label(),"units":"mm","work_offset":project.setup.work_offset.code(),"machine_limits_configured":project.setup.machine_limits.is_some(),"machine_limits_validated":project.setup.machine_limits.is_some(),"warnings":warnings}),
+        json_output,
+    )
+}
+
+/// Plan the operations a model needs (roughing, helical bores, finishing) and
+/// save them, with generated toolpaths, back into the project.
+fn plan_command(args: &[String], json_output: bool) -> CliResult<()> {
+    use crate::cam::auto_plan::{plan, PlannerOptions};
+    configure_gpu(args)?;
+    let path = option_path(args, "--project")?;
+    let mut project = read_project(&path)?;
+    let number = |flag: &str| -> CliResult<Option<f64>> {
+        match args.iter().position(|arg| arg == flag) {
+            None => Ok(None),
+            Some(index) => args
+                .get(index + 1)
+                .and_then(|value| value.parse::<f64>().ok())
+                .map(Some)
+                .ok_or((2, format!("{flag} requires a number"))),
+        }
+    };
+    let mut options = PlannerOptions::default();
+    if let Some(value) = number("--roughing-tool")? {
+        options.roughing_tool_mm = value;
+    }
+    if let Some(value) = number("--finishing-tool")? {
+        options.finishing_tool_mm = value;
+    }
+    if let Some(value) = number("--steep-angle")? {
+        options.steep_angle_deg = value;
+    }
+    if let Some(index) = args.iter().position(|arg| arg == "--dynamic-stock") {
+        project.setup.dynamic_stock_check = match args.get(index + 1).map(String::as_str) {
+            Some("on") => true,
+            Some("off") => false,
+            _ => return Err((2, "--dynamic-stock must be 'on' or 'off'".into())),
+        };
+    }
+    let model_index = project
+        .models
+        .iter()
+        .position(|model| model.visible)
+        .ok_or((
+            3,
+            "planning requires an imported, visible STEP model".into(),
+        ))?;
+    if args.iter().any(|arg| arg == "--fit-stock") {
+        let envelope = project.models[model_index]
+            .stock_envelope(&project.setup, options.roughing_tool_mm * 0.5)
+            .map_err(|e| (3, format!("cannot fit the stock: {e}")))?;
+        project.setup.stock_origin_mm = envelope.stock_origin_mm;
+        project.setup.stock_size_mm = envelope.stock_size_mm;
+    }
+    let outcome = plan(&project.models[model_index], &project.setup, &options)
+        .map_err(|e| (3, format!("planning failed: {e}")))?;
+    let replaced = project
+        .operations
+        .iter()
+        .filter(|operation| operation.auto_planned)
+        .count();
+    project
+        .operations
+        .retain(|operation| !operation.auto_planned);
+    let summary: Vec<Value> = outcome
+        .operations
+        .iter()
+        .map(|operation| {
+            json!({
+                "name": operation.name,
+                "kind": format!("{:?}", operation.kind),
+                "tool_mm": operation.tool.diameter_mm,
+                "moves": operation.toolpath.moves.len(),
+                "holes": operation.bores.len(),
+            })
+        })
+        .collect();
+    project.operations.extend(outcome.operations);
+    write_project(&path, &project)?;
+    emit(
+        "plan",
+        json!({
+            "project": path,
+            "operations": summary,
+            "replaced_previous_plan_operations": replaced,
+            "dynamic_stock_check": project.setup.dynamic_stock_check,
+            "acceleration": crate::accel::status(),
+            "notes": outcome.notes,
+        }),
         json_output,
     )
 }

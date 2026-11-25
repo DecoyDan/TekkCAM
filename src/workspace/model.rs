@@ -81,6 +81,106 @@ pub struct ModelTransform {
     pub translation_mm: [f64; 3],
 }
 
+impl ModelTransform {
+    /// Rotation part as a row-major matrix (`M * p` rotates a column vector).
+    fn rotation_matrix(&self) -> [[f64; 3]; 3] {
+        let columns = [
+            rotate_point([1.0, 0.0, 0.0], self.rotation_degrees),
+            rotate_point([0.0, 1.0, 0.0], self.rotation_degrees),
+            rotate_point([0.0, 0.0, 1.0], self.rotation_degrees),
+        ];
+        std::array::from_fn(|row| std::array::from_fn(|column| columns[column][row]))
+    }
+
+    /// Turn the placed model by `degrees` about a world axis (0 = X, 1 = Y,
+    /// 2 = Z) through `pivot`. Scale is kept; the euler angles and translation
+    /// are updated so the pivot does not move.
+    pub fn rotated_about_world_axis(
+        &self,
+        axis: usize,
+        degrees: f64,
+        pivot: [f64; 3],
+    ) -> ModelTransform {
+        let mut about = [0.0; 3];
+        about[axis.min(2)] = degrees;
+        let turn = ModelTransform {
+            rotation_degrees: about,
+            ..ModelTransform::default()
+        }
+        .rotation_matrix();
+        let current = self.rotation_matrix();
+        let combined: [[f64; 3]; 3] = std::array::from_fn(|row| {
+            std::array::from_fn(|column| (0..3).map(|k| turn[row][k] * current[k][column]).sum())
+        });
+        let apply = |m: &[[f64; 3]; 3], p: [f64; 3]| -> [f64; 3] {
+            std::array::from_fn(|row| (0..3).map(|k| m[row][k] * p[k]).sum())
+        };
+        let turned_translation = apply(&turn, self.translation_mm);
+        let turned_pivot = apply(&turn, pivot);
+        ModelTransform {
+            scale: self.scale,
+            rotation_degrees: euler_from_matrix(&combined),
+            translation_mm: std::array::from_fn(|i| {
+                turned_translation[i] - turned_pivot[i] + pivot[i]
+            }),
+        }
+    }
+}
+
+/// Euler angles (applied X, then Y, then Z) that reproduce `matrix`. Angles
+/// within a hair of a multiple of 90° are snapped so repeated quarter turns
+/// do not drift.
+fn euler_from_matrix(matrix: &[[f64; 3]; 3]) -> [f64; 3] {
+    let snap = |degrees: f64| {
+        let quarter = (degrees / 90.0).round() * 90.0;
+        let value = if (degrees - quarter).abs() < 1e-6 {
+            quarter
+        } else {
+            degrees
+        };
+        // Avoid "-0" and keep angles in (-180, 180].
+        let wrapped = (value + 180.0).rem_euclid(360.0) - 180.0;
+        if wrapped <= -180.0 + 1e-9 {
+            180.0
+        } else if wrapped.abs() < 1e-9 {
+            0.0
+        } else {
+            wrapped
+        }
+    };
+    let sin_beta = (-matrix[2][0]).clamp(-1.0, 1.0);
+    let beta = sin_beta.asin();
+    if beta.cos().abs() > 1e-6 {
+        let alpha = matrix[2][1].atan2(matrix[2][2]);
+        let gamma = matrix[1][0].atan2(matrix[0][0]);
+        return [
+            snap(alpha.to_degrees()),
+            snap(beta.to_degrees()),
+            snap(gamma.to_degrees()),
+        ];
+    }
+    // Gimbal lock (Y at ±90°): X and Z turn about the same axis, so keep Z at 0
+    // and find the X angle that reproduces the matrix.
+    let beta_degrees = beta.to_degrees().round();
+    let mut best = (f64::INFINITY, 0.0);
+    for step in 0..360 {
+        let alpha = step as f64;
+        let candidate = ModelTransform {
+            rotation_degrees: [alpha, beta_degrees, 0.0],
+            ..ModelTransform::default()
+        }
+        .rotation_matrix();
+        let error: f64 = (0..3)
+            .flat_map(|r| (0..3).map(move |c| (r, c)))
+            .map(|(r, c)| (candidate[r][c] - matrix[r][c]).abs())
+            .sum();
+        if error < best.0 {
+            best = (error, alpha);
+        }
+    }
+    [snap(best.1), snap(beta_degrees), 0.0]
+}
+
 impl Default for ModelTransform {
     fn default() -> Self {
         Self {
@@ -132,9 +232,25 @@ impl Model {
     }
 
     pub fn transformed_bounds(&self) -> [[f32; 3]; 2] {
-        let points =
-            bounds_corners(self.bounds).map(|point| transform_point_f64(point, self.transform));
+        self.bounds_with_transform(self.transform)
+    }
+
+    /// Bounds the model would have under `transform` (exact for 90° steps),
+    /// without changing the model. Used to preview an orientation change.
+    pub fn bounds_with_transform(&self, transform: ModelTransform) -> [[f32; 3]; 2] {
+        let points = bounds_corners(self.bounds).map(|point| transform_point_f64(point, transform));
         reduce_bounds(points)
+    }
+
+    /// A vertex as it would be placed under `transform`.
+    pub fn vertex_with_transform(
+        &self,
+        index: usize,
+        transform: ModelTransform,
+    ) -> Option<[f32; 3]> {
+        self.vertices
+            .get(index)
+            .map(|vertex| transform_point(*vertex, transform))
     }
 
     pub fn reset_transform(&mut self) {
@@ -148,13 +264,23 @@ impl Model {
         setup: &crate::workspace::setup::MachiningSetup,
         xy_tool_clearance_mm: f64,
     ) -> Result<StockEnvelope, String> {
+        self.stock_envelope_with_transform(setup, xy_tool_clearance_mm, self.transform)
+    }
+
+    /// Stock bounds around the model as it would sit under `transform`.
+    pub fn stock_envelope_with_transform(
+        &self,
+        setup: &crate::workspace::setup::MachiningSetup,
+        xy_tool_clearance_mm: f64,
+        transform: ModelTransform,
+    ) -> Result<StockEnvelope, String> {
         use crate::workspace::setup::WorkAxis;
 
         setup.validate()?;
         if !xy_tool_clearance_mm.is_finite() || xy_tool_clearance_mm < 0.0 {
             return Err("tool clearance must be a finite non-negative value".into());
         }
-        let bounds = self.transformed_bounds();
+        let bounds = self.bounds_with_transform(transform);
         if bounds.iter().flatten().any(|value| !value.is_finite()) {
             return Err("model bounds must be finite to fit the stock".into());
         }
@@ -304,4 +430,127 @@ fn reduce_bounds(points: [[f64; 3]; 8]) -> [[f32; 3]; 2] {
         }
     }
     bounds.map(|side| side.map(|value| value as f32))
+}
+
+#[cfg(test)]
+mod transform_tests {
+    use super::*;
+
+    /// A 10 × 4 × 2 block whose origin is not at its centre.
+    fn block() -> Model {
+        Model {
+            name: "block".into(),
+            source_path: "fixture:block".into(),
+            visible: true,
+            source_schema: vec![],
+            source_unit: StepLengthUnit::Millimeter,
+            units_are_millimeters: true,
+            transform: ModelTransform::default(),
+            vertices: vec![[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 4.0, 2.0]],
+            triangles: vec![[0, 1, 2]],
+            bodies: vec![],
+            bounds: [[0.0, 0.0, 0.0], [10.0, 4.0, 2.0]],
+            import_notes: vec![],
+        }
+    }
+
+    fn center(bounds: [[f32; 3]; 2]) -> [f32; 3] {
+        std::array::from_fn(|axis| (bounds[0][axis] + bounds[1][axis]) * 0.5)
+    }
+
+    fn extents(bounds: [[f32; 3]; 2]) -> [f32; 3] {
+        std::array::from_fn(|axis| bounds[1][axis] - bounds[0][axis])
+    }
+
+    fn turn(model: &Model, transform: ModelTransform, axis: usize, degrees: f64) -> ModelTransform {
+        let bounds = model.bounds_with_transform(transform);
+        let pivot = center(bounds).map(f64::from);
+        transform.rotated_about_world_axis(axis, degrees, pivot)
+    }
+
+    #[test]
+    fn quarter_turn_about_z_swaps_the_footprint_and_keeps_the_centre() {
+        let model = block();
+        let before = model.bounds_with_transform(model.transform);
+        let after_transform = turn(&model, model.transform, 2, 90.0);
+        let after = model.bounds_with_transform(after_transform);
+        assert_eq!(extents(after), [4.0, 10.0, 2.0]);
+        for axis in 0..3 {
+            assert!((center(after)[axis] - center(before)[axis]).abs() < 1e-4);
+        }
+    }
+
+    #[test]
+    fn flipping_over_about_x_puts_the_old_bottom_on_top() {
+        let model = block();
+        // Vertex 0 is on the bottom face (z = 0); after a flip it is on top.
+        let flipped = turn(&model, model.transform, 0, 180.0);
+        let bounds = model.bounds_with_transform(flipped);
+        let moved = model.vertex_with_transform(0, flipped).unwrap();
+        assert!((moved[2] - bounds[1][2]).abs() < 1e-4);
+        assert_eq!(extents(bounds), [10.0, 4.0, 2.0]);
+    }
+
+    #[test]
+    fn four_quarter_turns_return_to_the_start() {
+        let model = block();
+        for axis in 0..3 {
+            let mut transform = model.transform;
+            for _ in 0..4 {
+                transform = turn(&model, transform, axis, 90.0);
+            }
+            let bounds = model.bounds_with_transform(transform);
+            let original = model.bounds_with_transform(model.transform);
+            for side in 0..2 {
+                for k in 0..3 {
+                    assert!((bounds[side][k] - original[side][k]).abs() < 1e-4);
+                }
+            }
+            assert_eq!(transform.rotation_degrees, [0.0; 3]);
+        }
+    }
+
+    #[test]
+    fn turns_about_different_axes_compose_in_the_world_frame() {
+        let model = block();
+        // X then Y quarter turns through the world axes, checked against the
+        // placed vertex positions rather than the euler angles.
+        let mut transform = model.transform;
+        transform = turn(&model, transform, 0, 90.0);
+        transform = turn(&model, transform, 1, 90.0);
+        transform = turn(&model, transform, 2, 90.0);
+        transform = turn(&model, transform, 0, -90.0);
+        let bounds = model.bounds_with_transform(transform);
+        // Every placed vertex stays inside the placed bounds, and the volume is kept.
+        for index in 0..model.vertices.len() {
+            let v = model.vertex_with_transform(index, transform).unwrap();
+            for k in 0..3 {
+                assert!(v[k] >= bounds[0][k] - 1e-4 && v[k] <= bounds[1][k] + 1e-4);
+            }
+        }
+        let volume = |b: [[f32; 3]; 2]| extents(b).iter().product::<f32>();
+        assert!((volume(bounds) - 80.0).abs() < 1e-3);
+        // All angles stay exact multiples of 90°.
+        assert!(transform
+            .rotation_degrees
+            .iter()
+            .all(|angle| (angle / 90.0 - (angle / 90.0).round()).abs() < 1e-9));
+    }
+
+    #[test]
+    fn stock_envelope_follows_the_previewed_orientation() {
+        let model = block();
+        let setup = crate::workspace::setup::MachiningSetup::default();
+        let upright = model.stock_envelope(&setup, 0.0).unwrap();
+        let turned = model.stock_envelope_with_transform(
+            &setup,
+            0.0,
+            turn(&model, model.transform, 2, 90.0),
+        );
+        let turned = turned.unwrap();
+        assert!((upright.stock_size_mm[0] - turned.stock_size_mm[1]).abs() < 1e-6);
+        assert!((upright.stock_size_mm[1] - turned.stock_size_mm[0]).abs() < 1e-6);
+        // The model itself was not touched.
+        assert_eq!(model.transform, ModelTransform::default());
+    }
 }

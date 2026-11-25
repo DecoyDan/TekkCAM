@@ -273,6 +273,10 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                                 ),
                                 ("⊙  Drilling", crate::cam::operations::Operation::drill()),
                                 (
+                                    "⊙  Helical Bore (mill holes)",
+                                    crate::cam::operations::Operation::helical_bore(),
+                                ),
+                                (
                                     "▭  Contour Cut",
                                     crate::cam::operations::Operation::contour(),
                                 ),
@@ -341,6 +345,27 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                     if ui.button("▶ Generate All").clicked() {
                         for i in 0..app.project.operations.len() {
                             app.generate_operation(i);
+                        }
+                    }
+                    if app.plan_pending {
+                        if ui
+                            .button("✖ Cancel plan")
+                            .on_hover_text("Stop the running auto plan; nothing is changed")
+                            .clicked()
+                        {
+                            app.cancel_auto_plan();
+                        }
+                    } else {
+                        let can_auto_plan = app.project.models.iter().any(|model| model.visible)
+                            && !app.generation_pending;
+                        if ui
+                            .add_enabled(can_auto_plan, egui::Button::new("⚙ Auto Plan"))
+                            .on_hover_text(
+                                "Pick and generate every operation this model needs (roughing, helical bores, finishing)",
+                            )
+                            .clicked()
+                        {
+                            app.ui_state.show_auto_plan_dialog = true;
                         }
                     }
                     let can_select_model_faces = app.ui_state.show_3d_view
