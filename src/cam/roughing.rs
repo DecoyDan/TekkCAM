@@ -347,7 +347,7 @@ fn validate_rapid_clearance(path: &Toolpath, minimum_z: f64) -> Result<(), Strin
 /// Every sample becomes two probes (cutter access, then holder envelope) that are
 /// answered in one batch; the first failing probe, in path order, decides the
 /// error, exactly as if the samples had been tested one by one.
-fn validate_cutting_segments(
+pub(crate) fn validate_cutting_segments(
     path: &Toolpath,
     engine: &ProbeEngine<'_>,
     tool: &Tool,
@@ -409,10 +409,22 @@ fn validate_cutting_segments(
     crate::cam::cancel::check()?;
     for (index, fits) in answers.iter().enumerate() {
         if !fits {
+            let probe = &probes[index];
+            let place = format!(
+                "near X{:.2} Y{:.2} Z{:.2}",
+                probe.x,
+                probe.y,
+                probe.limit
+                    - if index % 2 == 0 {
+                        setup.chordal_tolerance_mm
+                    } else {
+                        tool.flute_length_mm + 1e-6
+                    }
+            );
             return Err(if index % 2 == 0 {
-                "approximate gouge check failed along a roughing move".into()
+                format!("approximate gouge check failed along a roughing move {place}")
             } else {
-                "approximate holder collision detected along a roughing move".into()
+                format!("approximate holder collision detected along a roughing move {place}")
             });
         }
     }

@@ -229,10 +229,7 @@ impl InProcessStock {
             rows: self.rows,
             floor: self.floor_z as f32,
         };
-        let cutter = crate::accel::CutTool {
-            radius: (tool.diameter_mm * 0.5) as f32,
-            ball: tool.shape == ToolShape::BallNose,
-        };
+        let cutter = crate::accel::CutTool::from_tool(tool);
         crate::accel::cut_capsules(&spec, &mut self.heights, &cuts, cutter);
     }
 
@@ -315,7 +312,7 @@ impl InProcessStock {
         if tip >= self.top_z {
             return;
         }
-        let ball = tool.shape == ToolShape::BallNose;
+        let profile = crate::accel::CutTool::from_tool(tool);
         let floor = self.floor_z as f32;
         let min_column = ((point[0] - radius - self.origin[0]) / self.cell_mm).floor() as isize;
         let max_column = ((point[0] + radius - self.origin[0]) / self.cell_mm).ceil() as isize;
@@ -334,12 +331,7 @@ impl InProcessStock {
                     continue;
                 }
                 cut_any = true;
-                let surface = if ball {
-                    let d = distance.min(radius);
-                    radius - (radius * radius - d * d).max(0.0).sqrt()
-                } else {
-                    0.0
-                };
+                let surface = profile.profile(distance.min(radius));
                 let height = ((tip + surface) as f32).max(floor);
                 let index = row as usize * self.columns + column as usize;
                 if height < self.heights[index] {

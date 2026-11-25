@@ -611,6 +611,8 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                 let operation = &mut app.project.operations[index];
                 operation.visible = !operation.visible;
                 app.ui_state.project_dirty = true;
+                // A hidden operation is also left out of the simulation.
+                app.invalidate_simulation();
                 app.scene_sig.clear();
             }
             if let Some((index, excluded)) = set_operation_exclusion {

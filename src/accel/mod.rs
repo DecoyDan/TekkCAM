@@ -344,16 +344,60 @@ pub struct GridSpec {
 /// A straight cutter movement `(start, end)` in world coordinates.
 pub type Cut = [[f32; 3]; 2];
 
-/// The cutter shape swept along a cut.
+/// The cutter shape swept along a cut: a cylinder of `radius` whose lower edge
+/// is rounded by `corner` (0 = flat end mill, `radius` = ball nose, in between =
+/// bull nose).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CutTool {
     pub radius: f32,
-    pub ball: bool,
+    pub corner: f32,
+}
+
+impl CutTool {
+    /// The cutter's real geometry: end mills are flat, ball-nose tools fully
+    /// round, bull-nose tools rounded by their corner radius.
+    pub fn from_tool(tool: &crate::cam::tool::Tool) -> Self {
+        use crate::cam::tool::ToolShape;
+        let radius = (tool.diameter_mm * 0.5) as f32;
+        let corner = match tool.shape {
+            ToolShape::Flat => 0.0,
+            ToolShape::BallNose => radius,
+            ToolShape::BullNose => (tool.corner_radius_mm as f32).clamp(0.0, radius),
+        };
+        Self { radius, corner }
+    }
+
+    pub fn flat(radius: f32) -> Self {
+        Self {
+            radius,
+            corner: 0.0,
+        }
+    }
+
+    pub fn ball(radius: f32) -> Self {
+        Self {
+            radius,
+            corner: radius,
+        }
+    }
+
+    /// Height of the cutter's lower surface above its tip at horizontal distance
+    /// `distance` from the axis.
+    pub fn profile(&self, distance: f64) -> f64 {
+        let corner = (self.corner as f64).clamp(0.0, self.radius as f64);
+        let flat = self.radius as f64 - corner;
+        if corner > 0.0 && distance > flat {
+            let across = distance - flat;
+            corner - (corner * corner - across * across).max(0.0).sqrt()
+        } else {
+            0.0
+        }
+    }
 }
 
 /// Lower a height-field with swept-cutter cuts: every node within the cutter
-/// radius of a segment is lowered to the segment's height there (plus the ball
-/// profile for a ball-nose cutter). Order of the cuts does not matter.
+/// radius of a segment is lowered to the segment's height there (plus the
+/// cutter's corner profile). Order of the cuts does not matter.
 pub fn cut_capsules(spec: &GridSpec, heights: &mut [f32], cuts: &[Cut], tool: CutTool) {
     if cuts.is_empty() || heights.len() != spec.columns * spec.rows {
         return;
@@ -421,10 +465,7 @@ pub fn cut_capsules_cpu(spec: &GridSpec, heights: &mut [f32], cuts: &[Cut], tool
                 if dist_sq > radius_sq {
                     continue;
                 }
-                let mut z = depth;
-                if tool.ball {
-                    z += radius - (radius_sq - dist_sq).max(0.0).sqrt();
-                }
+                let z = depth + tool.profile(dist_sq.sqrt());
                 let z = (z as f32).max(spec.floor);
                 let node = iy as usize * spec.columns + ix as usize;
                 if z < heights[node] {

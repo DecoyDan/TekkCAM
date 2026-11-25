@@ -50,7 +50,13 @@ pub struct BoreParams {
     pub stepdown_mm: f64,
     pub stepover_ratio: f64,
     pub path_tolerance_mm: f64,
+    /// Descent angle of the helix in degrees (the slope of the ramp it cuts).
+    /// Low angles are gentle on the cutter and a low-torque spindle.
+    pub ramp_angle_deg: f64,
 }
+
+/// Default helix descent angle: shallow, to keep the cutter lightly loaded.
+pub const DEFAULT_RAMP_ANGLE_DEG: f64 = 2.0;
 
 impl Default for BoreParams {
     fn default() -> Self {
@@ -58,6 +64,7 @@ impl Default for BoreParams {
             stepdown_mm: 2.0,
             stepover_ratio: 0.4,
             path_tolerance_mm: 0.02,
+            ramp_angle_deg: DEFAULT_RAMP_ANGLE_DEG,
         }
     }
 }
@@ -98,6 +105,8 @@ pub fn generate_bores(
         || params.stepover_ratio > 1.0
         || !params.path_tolerance_mm.is_finite()
         || params.path_tolerance_mm <= 0.0
+        || !params.ramp_angle_deg.is_finite()
+        || !(0.2..=45.0).contains(&params.ramp_angle_deg)
     {
         return Err("helical bore parameters must be positive".into());
     }
@@ -144,7 +153,13 @@ fn bore_one(
         ));
     }
     let center = feature.center;
-    let pitch = (tool.diameter_mm * 0.25).clamp(0.1, params.stepdown_mm.max(0.1));
+    // Depth gained per revolution on a helix of radius `r` at the ramp angle.
+    let ramp_tan = params.ramp_angle_deg.to_radians().tan();
+    let pitch_at = |radius: f64| {
+        (std::f64::consts::TAU * radius * ramp_tan)
+            .min(tool.diameter_mm * 0.25)
+            .clamp(0.05, params.stepdown_mm.max(0.05))
+    };
     let lateral_feed = tool.feed_rate_mm_min;
     let helix_feed = tool.plunge_rate_mm_min;
     let on_circle = |radius: f64, angle: f64| {
@@ -161,7 +176,7 @@ fn bore_one(
     if orbit <= tool_radius {
         // One helix on the wall radius; the cutter overlaps the centre.
         path.push_rapid(on_circle(orbit, 0.0), feature.top_z);
-        let turns = (feature.depth_mm() / pitch).max(0.25);
+        let turns = (feature.depth_mm() / pitch_at(orbit)).max(0.25);
         let angle = spiral.run(
             path,
             (orbit, orbit),
@@ -195,7 +210,7 @@ fn bore_one(
             // Back to the entry radius across the floor already cut.
             path.push_feed(on_circle(entry, angle), z_previous, lateral_feed);
         }
-        let ramp_turns = ((z_previous - z_next) / pitch).max(0.25);
+        let ramp_turns = ((z_previous - z_next) / pitch_at(entry)).max(0.25);
         angle = spiral.run(
             path,
             (entry, entry),
@@ -342,6 +357,45 @@ mod tests {
             .moves
             .iter()
             .any(|m| matches!(m, ToolMove::Drill { .. })));
+    }
+
+    #[test]
+    fn the_helix_never_descends_steeper_than_the_ramp_angle() {
+        let feature = BoreFeature {
+            center: [0.0, 0.0],
+            diameter_mm: 14.0,
+            top_z: 0.0,
+            bottom_z: -3.0,
+        };
+        let params = BoreParams {
+            ramp_angle_deg: 2.0,
+            ..BoreParams::default()
+        };
+        let path = generate_bores(&[feature], &tool(6.0), &params).unwrap();
+        let points = feed_points(&path);
+        // Slope of every move that descends: depth gained over horizontal run.
+        let steepest = points
+            .windows(2)
+            .filter(|pair| pair[1][2] < pair[0][2] - 1e-9)
+            .map(|pair| {
+                let run = (pair[1][0] - pair[0][0]).hypot(pair[1][1] - pair[0][1]);
+                (pair[0][2] - pair[1][2]) / run.max(1e-9)
+            })
+            .fold(0.0_f64, f64::max);
+        assert!(
+            steepest <= params.ramp_angle_deg.to_radians().tan() * 1.15,
+            "steepest descent slope {steepest}"
+        );
+        // A steeper request is rejected only outside the supported range.
+        assert!(generate_bores(
+            &[feature],
+            &tool(6.0),
+            &BoreParams {
+                ramp_angle_deg: 80.0,
+                ..params
+            }
+        )
+        .is_err());
     }
 
     #[test]

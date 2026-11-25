@@ -28,6 +28,13 @@ pub struct Tool {
     pub corner_radius_mm: f64,
     #[serde(default = "default_holder_clearance")]
     pub holder_clearance_mm: f64,
+    /// Number of cutting flutes; feed is rpm x flutes x chip load.
+    #[serde(default = "default_flutes")]
+    pub flutes: u32,
+}
+
+fn default_flutes() -> u32 {
+    2
 }
 
 fn default_flute_length() -> f64 {
@@ -54,6 +61,7 @@ impl Default for Tool {
             stickout_mm: default_stickout(),
             corner_radius_mm: 0.0,
             holder_clearance_mm: default_holder_clearance(),
+            flutes: default_flutes(),
         }
     }
 }
@@ -67,7 +75,8 @@ pub fn built_in_tools() -> Vec<Tool> {
                    diameter: f64,
                    flute_length: f64,
                    reach: f64,
-                   corner: f64| {
+                   corner: f64,
+                   flutes: u32| {
         tools.push(Tool {
             name: name.into(),
             description: description.into(),
@@ -75,6 +84,7 @@ pub fn built_in_tools() -> Vec<Tool> {
             flute_length_mm: flute_length,
             stickout_mm: reach.max(flute_length),
             corner_radius_mm: corner,
+            flutes,
             ..Tool::default()
         });
     };
@@ -87,6 +97,7 @@ pub fn built_in_tools() -> Vec<Tool> {
             10.0,
             20.0,
             0.0,
+            4,
         );
     }
     add(
@@ -96,6 +107,7 @@ pub fn built_in_tools() -> Vec<Tool> {
         4.0,
         20.0,
         0.0,
+        4,
     );
 
     for (coating, hrc, length, flute_length, corner) in [
@@ -114,6 +126,7 @@ pub fn built_in_tools() -> Vec<Tool> {
             flute_length as f64,
             flute_length as f64 + 10.0,
             corner,
+            2,
         );
     }
 
@@ -125,7 +138,23 @@ pub fn built_in_tools() -> Vec<Tool> {
             flute_length as f64,
             flute_length as f64 + 10.0,
             0.0,
+            1,
         );
+    }
+
+    // Ball-nose cutters for 3D finishing (flat end mills cannot follow a curved
+    // surface without gouging it).
+    for (diameter, flute_length) in [(1.0, 3.0), (2.0, 6.0), (3.0, 9.0), (4.0, 12.0), (6.0, 18.0)] {
+        tools.push(Tool {
+            name: format!("{diameter} mm Ball Nose Carbide · OAL 50 mm"),
+            description: "Solid carbide two-flute ball-nose end mill for 3D contouring and finishing of wood, plastics and non-ferrous metals.".into(),
+            diameter_mm: diameter,
+            shape: ToolShape::BallNose,
+            flute_length_mm: flute_length,
+            stickout_mm: flute_length + 12.0,
+            flutes: 2,
+            ..Tool::default()
+        });
     }
     tools
 }
@@ -160,6 +189,9 @@ impl Tool {
         if !self.spindle_rpm.is_finite() || self.spindle_rpm <= 0.0 {
             return Err("spindle speed must be positive".into());
         }
+        if !(1..=8).contains(&self.flutes) {
+            return Err("flute count must be between 1 and 8".into());
+        }
         Ok(())
     }
 }
@@ -184,5 +216,6 @@ mod tests {
         assert_eq!(tool.shape, ToolShape::Flat);
         assert_eq!(tool.flute_length_mm, 12.0);
         assert_eq!(tool.stickout_mm, 20.0);
+        assert_eq!(tool.flutes, 2);
     }
 }

@@ -244,22 +244,14 @@ impl MachiningSetup {
                     WorkAxis::ZUp => (stock_z_max - model_bounds[0][2] as f64).max(0.0),
                     WorkAxis::ZDown => (smin[2] - model_bounds[0][2] as f64).max(0.0),
                 };
-                if tool.flute_length_mm < depth_into_stock {
-                    issues.push(format!("tool flute length ({:.2} mm) is shorter than required stock reach ({depth_into_stock:.2} mm)", tool.flute_length_mm));
+                // The cutter has to reach the lowest point of the part. Its shank
+                // is the same diameter as the flutes, so the total reach
+                // (stickout) is what counts, not just the cutting length.
+                if tool.stickout_mm.max(tool.flute_length_mm) < depth_into_stock {
+                    issues.push(format!("tool reach ({:.2} mm) is shorter than required stock reach ({depth_into_stock:.2} mm)", tool.stickout_mm.max(tool.flute_length_mm)));
                 }
-                // Approximate holder as a cylinder with cutter radius plus the configured
-                // radial clearance. Keep that envelope inside the stock XY footprint.
-                let holder_radius = tool.diameter_mm * 0.5 + tool.holder_clearance_mm;
-                for axis in 0..2 {
-                    if model_bounds[0][axis] as f64 - holder_radius < smin[axis]
-                        || model_bounds[1][axis] as f64 + holder_radius > smax[axis]
-                    {
-                        issues.push(format!(
-                            "approximate holder envelope exceeds stock on {} axis",
-                            ["X", "Y"][axis]
-                        ));
-                    }
-                }
+                // The cutter may overhang the stock edge (it is then cutting air),
+                // so a narrow margin does not rule out a large cutter.
             }
         }
         issues
@@ -320,10 +312,12 @@ mod tests {
         tool.holder_clearance_mm = 3.0;
         let model = [[2.0, 2.0, 0.0], [98.0, 98.0, 10.0]];
         let issues = setup.validate_for(model, &tool);
-        assert!(issues.iter().any(|issue| issue.contains("flute length")));
-        assert!(issues
-            .iter()
-            .any(|issue| issue.contains("approximate holder envelope")));
+        assert!(issues.iter().any(|issue| issue.contains("tool reach")));
+        // A narrow margin no longer rules out a cutter that overhangs the edge.
+        assert!(!issues.iter().any(|issue| issue.contains("holder envelope")));
+        // A long shank reaches even when the flutes are short.
+        tool.stickout_mm = 25.0;
+        assert!(setup.validate_for(model, &tool).is_empty());
     }
 
     #[test]

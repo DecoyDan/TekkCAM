@@ -13,7 +13,9 @@ struct CutGrid {
     columns: u32,
     rows: u32,
     count: u32,
-    ball: u32,
+    // Corner radius of the cutter: 0 = flat end mill, radius = ball nose,
+    // anything in between = bull nose.
+    corner: f32,
 };
 
 @group(0) @binding(0) var<uniform> g: CutGrid;
@@ -74,8 +76,11 @@ fn main(
         let d = p - nearest;
         let dist_sq = dot(d, d);
         if (dist_sq <= radius_sq) {
-            if (g.ball != 0u) {
-                z = z + r - sqrt(max(radius_sq - dist_sq, 0.0));
+            let d = sqrt(dist_sq);
+            let flat_radius = r - g.corner;
+            if (g.corner > 0.0 && d > flat_radius) {
+                let e = d - flat_radius;
+                z = z + g.corner - sqrt(max(g.corner * g.corner - e * e, 0.0));
             }
             z = max(z, g.floor_z);
             atomicMin(&heights[u32(iy) * g.columns + u32(ix)], encode(z));

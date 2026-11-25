@@ -497,7 +497,7 @@ fn generate_command(args: &[String], json_output: bool) -> CliResult<()> {
                     3,
                     format!("operation '{}' requires an imported STEP model", op.name),
                 ))?;
-                crate::cam::roughing::generate(model, &project.setup, &op.tool, op.margin_mm, None)
+                crate::cam::auto_plan::generate_roughing_operation(model, &project.setup, &op)
             }
             OperationKind::FinishRaster3D
             | OperationKind::FinishContour3D
@@ -642,8 +642,19 @@ fn plan_command(args: &[String], json_output: bool) -> CliResult<()> {
         project.setup.stock_origin_mm = envelope.stock_origin_mm;
         project.setup.stock_size_mm = envelope.stock_size_mm;
     }
-    let outcome = plan(&project.models[model_index], &project.setup, &options)
-        .map_err(|e| (3, format!("planning failed: {e}")))?;
+    let mut library = crate::cam::tool::built_in_tools();
+    for tool in &project.tools {
+        if !library.iter().any(|known| known.name == tool.name) {
+            library.push(tool.clone());
+        }
+    }
+    let outcome = plan(
+        &project.models[model_index],
+        &project.setup,
+        &options,
+        &library,
+    )
+    .map_err(|e| (3, format!("planning failed: {e}")))?;
     let replaced = project
         .operations
         .iter()

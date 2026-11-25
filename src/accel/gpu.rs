@@ -59,7 +59,7 @@ struct CutParams {
     columns: u32,
     rows: u32,
     count: u32,
-    ball: u32,
+    corner: f32,
 }
 
 struct Kernel {
@@ -470,7 +470,7 @@ impl GpuContext {
             columns: spec.columns as u32,
             rows: spec.rows as u32,
             count: cuts.len() as u32,
-            ball: u32::from(tool.ball),
+            corner: tool.corner,
         };
         let cut_data: Vec<[f32; 4]> = cuts
             .iter()

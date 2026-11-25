@@ -21,6 +21,7 @@
 use std::collections::HashMap;
 
 use crate::cam::{
+    adaptive::{self, AdaptiveParams},
     cancel,
     finishing::{self, FinishStrategy, SlopeWindow},
     helical::{self, BoreFeature, BoreParams, ASSUMED_BIT_SIZES_MM},
@@ -49,10 +50,10 @@ const MAX_SIZE_ATTEMPTS: usize = 8;
 
 #[derive(Debug, Clone)]
 pub struct PlannerOptions {
-    /// Largest roughing end mill to try (mm); smaller sizes are tried if the
-    /// stock or the part does not leave room for it.
+    /// Largest roughing end mill (mm) the planner may pick from the tool
+    /// library; it takes the largest library end mill that works.
     pub roughing_tool_mm: f64,
-    /// Largest ball-nose finishing cutter to try (mm).
+    /// Largest ball-nose finishing cutter (mm) to pick from the tool library.
     pub finishing_tool_mm: f64,
     /// Surfaces steeper than this (degrees from horizontal) are "steep".
     pub steep_angle_deg: f64,
@@ -63,7 +64,7 @@ pub struct PlannerOptions {
 impl Default for PlannerOptions {
     fn default() -> Self {
         Self {
-            roughing_tool_mm: 6.0,
+            roughing_tool_mm: 12.0,
             finishing_tool_mm: 3.0,
             steep_angle_deg: 40.0,
             residual_tolerance_mm: 0.05,
@@ -410,9 +411,33 @@ fn fit_circle(points: &[[f64; 3]]) -> Option<([f64; 2], f64)> {
 
 // ───────────────────────── tooling ─────────────────────────
 
-/// An assumed tool (not read from the tool library) with feeds taken from the
-/// setup's chip load. Spindle speeds are high because the machine is a
-/// low-torque, high-RPM router.
+/// Largest chip load per tooth (mm) the planner will use, however high the
+/// project's own feed-per-tooth setting is: conservative on purpose.
+pub const MAX_CHIP_LOAD_MM: f64 = 0.05;
+
+/// Chip load per tooth for a tool: the setup's value (never above
+/// [`MAX_CHIP_LOAD_MM`]), eased down for small cutters and a little more for
+/// safety.
+pub fn chip_load_mm(tool: &Tool, setup: &MachiningSetup) -> f64 {
+    let base = setup.chip_load_mm.min(MAX_CHIP_LOAD_MM);
+    (base * (tool.diameter_mm / 4.0).clamp(0.5, 1.0) * 0.9).max(0.005)
+}
+
+/// A copy of `tool` with cutting data for a low-torque, high-RPM spindle: a
+/// high spindle speed and a feed of rpm x flutes x chip load, capped, with a
+/// slow plunge/ramp feed.
+pub fn with_cutting_data(tool: &Tool, setup: &MachiningSetup) -> Tool {
+    let mut tool = tool.clone();
+    tool.spindle_rpm = tool.spindle_rpm.clamp(12_000.0, 24_000.0);
+    let feed = (tool.spindle_rpm * tool.flutes.max(1) as f64 * chip_load_mm(&tool, setup))
+        .clamp(100.0, 2_000.0);
+    tool.feed_rate_mm_min = feed;
+    tool.plunge_rate_mm_min = (feed * 0.3).max(50.0);
+    tool
+}
+
+/// An assumed tool (not read from the tool library), used for bores where the
+/// cutter size is chosen from the hole.
 pub fn assumed_tool(
     name: &str,
     diameter_mm: f64,
@@ -420,42 +445,65 @@ pub fn assumed_tool(
     reach_mm: f64,
     setup: &MachiningSetup,
 ) -> Tool {
-    let rpm = if diameter_mm <= 3.0 {
-        18_000.0
-    } else {
-        12_000.0
-    };
-    let chip_load = setup.chip_load_mm * (diameter_mm / 6.0).clamp(0.25, 1.0);
-    let feed = (rpm * 2.0 * chip_load).clamp(100.0, 3_000.0);
     let flute = reach_mm.max(diameter_mm * 2.0);
-    Tool {
-        name: name.into(),
-        description: "Assumed by the automatic planner (not from the tool library)".into(),
-        diameter_mm,
-        feed_rate_mm_min: feed,
-        plunge_rate_mm_min: (feed * 0.3).max(50.0),
-        spindle_rpm: rpm,
-        shape,
-        flute_length_mm: flute,
-        stickout_mm: flute + 10.0,
-        corner_radius_mm: 0.0,
-        holder_clearance_mm: 0.0,
-    }
+    with_cutting_data(
+        &Tool {
+            name: name.into(),
+            description: "Assumed by the automatic planner (not from the tool library)".into(),
+            diameter_mm,
+            spindle_rpm: if diameter_mm <= 3.0 {
+                18_000.0
+            } else {
+                12_000.0
+            },
+            shape,
+            flute_length_mm: flute,
+            stickout_mm: flute + 10.0,
+            corner_radius_mm: 0.0,
+            holder_clearance_mm: 0.0,
+            flutes: 2,
+            ..Tool::default()
+        },
+        setup,
+    )
 }
 
-/// Assumed sizes no larger than `limit`, largest first.
-fn sizes_up_to(limit: f64) -> Vec<f64> {
-    ASSUMED_BIT_SIZES_MM
-        .iter()
-        .rev()
-        .copied()
-        .filter(|size| *size <= limit + 1e-9)
-        .take(MAX_SIZE_ATTEMPTS)
-        .collect()
+/// Library tools of one shape no larger than `max_diameter`, best first: the
+/// largest diameter, then the longest reach, then cutters with a conventional
+/// flute count. Tools that cannot reach `reach_needed` are kept but come last.
+pub fn library_candidates(
+    library: &[Tool],
+    shape: ToolShape,
+    max_diameter: f64,
+    reach_needed: f64,
+) -> Vec<Tool> {
+    let mut tools: Vec<Tool> = Vec::new();
+    for tool in library {
+        let usable = tool.shape == shape
+            && tool.diameter_mm <= max_diameter + 1e-9
+            && tool.validate().is_ok()
+            && !tools.iter().any(|known| known.name == tool.name);
+        if usable {
+            tools.push(tool.clone());
+        }
+    }
+    let reaches = |tool: &Tool| tool.stickout_mm.max(tool.flute_length_mm) + 1.0 >= reach_needed;
+    tools.sort_by(|a, b| {
+        reaches(b)
+            .cmp(&reaches(a))
+            .then(b.diameter_mm.total_cmp(&a.diameter_mm))
+            .then(b.stickout_mm.total_cmp(&a.stickout_mm))
+            .then(
+                (a.flutes as i32 - 2)
+                    .abs()
+                    .cmp(&(b.flutes as i32 - 2).abs()),
+            )
+    });
+    tools
 }
 
 /// Failures that are only found after a whole path was generated and checked.
-/// Retrying with a smaller cutter repeats all that work, so only a few are allowed.
+/// Retrying with another cutter repeats all that work, so only a few are allowed.
 fn is_late_failure(error: &str) -> bool {
     error.contains("gouge") || error.contains("collision")
 }
@@ -463,21 +511,29 @@ fn is_late_failure(error: &str) -> bool {
 /// Late (expensive) failures tolerated before giving up on an operation.
 const MAX_LATE_FAILURES: usize = 2;
 
-/// Try tool sizes from the largest down until one generates a path. Stops at
-/// once when the job is cancelled.
-fn first_size_that_works<T>(
-    limit: f64,
-    mut attempt: impl FnMut(f64) -> Result<T, String>,
-) -> Result<(f64, T), String> {
-    let mut last = format!("no assumed tool size is at most {limit:.1} mm");
+/// Most library tools tried for one operation.
+const MAX_TOOL_ATTEMPTS: usize = 8;
+
+/// Try library tools in order (cutting data applied) until one generates a
+/// path. Stops at once when the job is cancelled.
+fn first_tool_that_works<T>(
+    candidates: &[Tool],
+    setup: &MachiningSetup,
+    mut attempt: impl FnMut(&Tool) -> Result<T, String>,
+) -> Result<(Tool, T), String> {
+    if candidates.is_empty() {
+        return Err("no suitable tool in the tool library".into());
+    }
+    let mut last = String::new();
     let mut late_failures = 0;
-    for size in sizes_up_to(limit) {
+    for candidate in candidates.iter().take(MAX_TOOL_ATTEMPTS) {
         cancel::check()?;
-        match attempt(size) {
-            Ok(value) => return Ok((size, value)),
+        let tool = with_cutting_data(candidate, setup);
+        match attempt(&tool) {
+            Ok(value) => return Ok((tool, value)),
             Err(error) if cancel::was_cancelled(&error) => return Err(error),
             Err(error) => {
-                last = format!("{size:.1} mm: {error}");
+                last = format!("{}: {error}", candidate.name);
                 if is_late_failure(&error) {
                     late_failures += 1;
                     if late_failures >= MAX_LATE_FAILURES {
@@ -500,6 +556,17 @@ pub fn finishing_setup(setup: &MachiningSetup, tool: &Tool) -> MachiningSetup {
 
 /// Finishing stepover as a fraction of the (ball-nose) tool diameter.
 pub const FINISH_STEPOVER_RATIO: f64 = 0.15;
+
+/// Generate the toolpath of a 3D roughing operation: adaptive clearing with a
+/// low radial stepover, a gentle entry ramp and engagement-based feed.
+pub fn generate_roughing_operation(
+    model: &Model,
+    setup: &MachiningSetup,
+    operation: &Operation,
+) -> Result<Toolpath, String> {
+    let params = AdaptiveParams::conservative(setup, &operation.tool, operation.margin_mm);
+    adaptive::generate(model, setup, &operation.tool, &params)
+}
 
 /// Generate the toolpath of a 3D finishing operation. Operations made by the
 /// planner keep their slope window and fine step sizes; hand-made ones use the
@@ -602,10 +669,14 @@ fn residual_areas(
 // ───────────────────────── the planner ─────────────────────────
 
 /// Plan the operations for `model` and generate every toolpath.
+/// Plan the operations for `model`. Roughing and finishing cutters are taken
+/// from `library` (the built-in tools plus the user's tool database); only the
+/// helical bores use a cutter assumed from the hole size.
 pub fn plan(
     model: &Model,
     setup: &MachiningSetup,
     options: &PlannerOptions,
+    library: &[Tool],
 ) -> Result<PlanOutcome, String> {
     cancel::progress("Analysing the model…");
     prepare(model, setup, options)?;
@@ -645,33 +716,34 @@ pub fn plan(
     };
     if analysis.average_removal_depth_mm >= 0.1 {
         let stage = std::time::Instant::now();
-        let attempt = first_size_that_works(options.roughing_tool_mm, |diameter| {
-            cancel::progress(format!("Roughing with a {diameter} mm end mill…"));
-            let tool = assumed_tool(
-                &format!("Rough end mill {diameter} mm"),
-                diameter,
-                ToolShape::Flat,
-                stock_depth + 1.0,
-                setup,
-            );
-            let path = roughing::generate(model, setup, &tool, allowance, None)?;
-            Ok((tool, path))
+        let candidates = library_candidates(
+            library,
+            ToolShape::Flat,
+            options.roughing_tool_mm,
+            depth_into_stock,
+        );
+        let attempt = first_tool_that_works(&candidates, setup, |tool| {
+            cancel::progress(format!("Adaptive roughing with {}…", tool.name));
+            let params = AdaptiveParams::conservative(setup, tool, allowance);
+            adaptive::generate(model, setup, tool, &params)
         });
         match attempt {
-            Ok((diameter, (tool, path))) => {
+            Ok((tool, path)) => {
+                let diameter = tool.diameter_mm;
                 notes.push(format!(
-                    "Roughing took {:.1} s ({} moves).",
+                    "Adaptive roughing with library tool '{}' (Ø{diameter}, {} flute(s)): chip load {:.3} mm/tooth, feed {:.0} mm/min, {:.0}% radial stepover, entry ramp {:.1}°. Took {:.1} s, {} moves.",
+                    tool.name,
+                    tool.flutes,
+                    chip_load_mm(&tool, setup),
+                    tool.feed_rate_mm_min,
+                    AdaptiveParams::conservative(setup, &tool, allowance).stepover_ratio * 100.0,
+                    AdaptiveParams::conservative(setup, &tool, allowance).ramp_angle_deg,
                     stage.elapsed().as_secs_f64(),
                     path.moves.len()
                 ));
-                if diameter + 1e-9 < options.roughing_tool_mm {
-                    notes.push(format!(
-                        "Roughing cutter reduced to {diameter} mm so it fits the stock margin and the part."
-                    ));
-                }
                 record_collisions(&mut notes, "3D roughing", &mut stock, &path, &tool, dynamic);
                 operations.push(operation_from(
-                    format!("Rough · Ø{diameter} flat"),
+                    format!("Adaptive rough · Ø{diameter} flat"),
                     OperationKind::Roughing3D,
                     tool,
                     setup,
@@ -751,32 +823,34 @@ pub fn plan(
             continue;
         }
         let stage = std::time::Instant::now();
-        let attempt = first_size_that_works(options.finishing_tool_mm, |diameter| {
-            cancel::progress(format!("Finishing {label} with a {diameter} mm ball nose…"));
-            let tool = assumed_tool(
-                &format!("Ball nose {diameter} mm"),
-                diameter,
-                ToolShape::BallNose,
-                depth_into_stock + 1.0,
-                setup,
-            );
-            let finishing_setup = finishing_setup(setup, &tool);
-            let stepover = (diameter * FINISH_STEPOVER_RATIO).max(0.05);
-            let path = finishing::generate_scoped(
+        let candidates = library_candidates(
+            library,
+            ToolShape::BallNose,
+            options.finishing_tool_mm,
+            depth_into_stock,
+        );
+        let attempt = first_tool_that_works(&candidates, setup, |tool| {
+            cancel::progress(format!("Finishing {label} with {}…", tool.name));
+            let finishing_setup = finishing_setup(setup, tool);
+            let stepover = (tool.diameter_mm * FINISH_STEPOVER_RATIO).max(0.05);
+            finishing::generate_scoped(
                 model,
                 &finishing_setup,
-                &tool,
+                tool,
                 strategy,
                 stepover,
                 0.0,
                 window,
-            )?;
-            Ok((tool, path))
+            )
         });
         match attempt {
-            Ok((diameter, (tool, path))) => {
+            Ok((tool, path)) => {
+                let diameter = tool.diameter_mm;
                 notes.push(format!(
-                    "Finishing {label} took {:.1} s ({} moves).",
+                    "Finishing {label} with library tool '{}': chip load {:.3} mm/tooth, feed {:.0} mm/min. Took {:.1} s, {} moves.",
+                    tool.name,
+                    chip_load_mm(&tool, setup),
+                    tool.feed_rate_mm_min,
                     stage.elapsed().as_secs_f64(),
                     path.moves.len()
                 ));
@@ -877,7 +951,10 @@ fn plan_bores(
                 ));
                 continue;
             }
-            feature.top_z = feature.top_z.min(remaining);
+            // Start from the highest stock over the hole: roughing steps can leave
+            // a thin slab above the rim, which the helix must cut through rather
+            // than rapid into.
+            feature.top_z = remaining.min(stock_top);
         }
         if feature.depth_mm() <= 1e-3 {
             continue;
@@ -908,6 +985,10 @@ fn plan_bores(
             stepdown_mm: setup.stepdown_mm,
             stepover_ratio: (setup.stepover_percent / 100.0).min(0.5),
             path_tolerance_mm: setup.path_tolerance_mm,
+            // Gentle helical entry: never steeper than the default ramp angle.
+            ramp_angle_deg: setup
+                .ramp_angle_deg
+                .clamp(0.5, helical::DEFAULT_RAMP_ANGLE_DEG),
         };
         match helical::generate_bores(&features, &tool, &params) {
             Ok(path) => {
@@ -1054,6 +1135,10 @@ mod tests {
         model_from(vertices, triangles)
     }
 
+    fn library() -> Vec<Tool> {
+        crate::cam::tool::built_in_tools()
+    }
+
     fn stock_setup() -> MachiningSetup {
         MachiningSetup {
             stock_size_mm: [40.0, 40.0, 10.0],
@@ -1160,7 +1245,13 @@ mod tests {
     #[test]
     fn plan_roughs_then_finishes_the_leftover_plateau() {
         let model = plate(8.0, 32.0, 7.0, None);
-        let outcome = plan(&model, &stock_setup(), &PlannerOptions::default()).unwrap();
+        let outcome = plan(
+            &model,
+            &stock_setup(),
+            &PlannerOptions::default(),
+            &library(),
+        )
+        .unwrap();
         let kinds: Vec<_> = outcome
             .operations
             .iter()
@@ -1194,7 +1285,13 @@ mod tests {
     #[test]
     fn plan_mills_holes_helically_and_never_drills_them() {
         let model = plate(8.0, 32.0, 7.0, Some(([20.0, 20.0], 4.0)));
-        let outcome = plan(&model, &stock_setup(), &PlannerOptions::default()).unwrap();
+        let outcome = plan(
+            &model,
+            &stock_setup(),
+            &PlannerOptions::default(),
+            &library(),
+        )
+        .unwrap();
         let bore = outcome
             .operations
             .iter()
@@ -1231,7 +1328,13 @@ mod tests {
     #[test]
     fn holes_that_are_too_small_are_reported_not_drilled() {
         let model = plate(8.0, 32.0, 7.0, Some(([20.0, 20.0], 0.5)));
-        let outcome = plan(&model, &stock_setup(), &PlannerOptions::default()).unwrap();
+        let outcome = plan(
+            &model,
+            &stock_setup(),
+            &PlannerOptions::default(),
+            &library(),
+        )
+        .unwrap();
         assert!(outcome
             .operations
             .iter()
@@ -1247,7 +1350,7 @@ mod tests {
         let model = plate(8.0, 32.0, 7.0, None);
         let mut setup = stock_setup();
         setup.dynamic_stock_check = false;
-        let outcome = plan(&model, &setup, &PlannerOptions::default()).unwrap();
+        let outcome = plan(&model, &setup, &PlannerOptions::default(), &library()).unwrap();
         assert!(outcome.notes.iter().any(|note| note.contains("OFF")));
         assert!(!outcome
             .notes
@@ -1265,9 +1368,14 @@ mod tests {
             progress: None,
         });
         let started = std::time::Instant::now();
-        let error = plan(&model, &stock_setup(), &PlannerOptions::default())
-            .err()
-            .expect("cancelled plans return an error");
+        let error = plan(
+            &model,
+            &stock_setup(),
+            &PlannerOptions::default(),
+            &library(),
+        )
+        .err()
+        .expect("cancelled plans return an error");
         assert!(cancel::was_cancelled(&error), "{error}");
         assert!(started.elapsed().as_secs() < 5);
     }
@@ -1285,7 +1393,7 @@ mod tests {
             progress: Some(sender),
         });
         let started = std::time::Instant::now();
-        let outcome = plan(&model, &setup, &PlannerOptions::default()).unwrap();
+        let outcome = plan(&model, &setup, &PlannerOptions::default(), &library()).unwrap();
         assert!(!outcome.operations.is_empty());
         assert!(
             started.elapsed().as_secs() < 30,
@@ -1298,7 +1406,7 @@ mod tests {
             "{messages:?}"
         );
         assert!(
-            messages.iter().any(|m| m.contains("Roughing")),
+            messages.iter().any(|m| m.contains("oughing")),
             "{messages:?}"
         );
     }
