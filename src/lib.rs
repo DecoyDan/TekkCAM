@@ -1,5 +1,6 @@
 #![allow(dead_code, unused_variables, unused_imports)]
 
+pub mod accel;
 pub mod app;
 pub mod cam;
 pub mod cli;

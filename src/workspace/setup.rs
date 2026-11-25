@@ -107,6 +107,15 @@ pub struct MachiningSetup {
     pub chordal_tolerance_mm: f64,
     #[serde(default = "default_path_tolerance")]
     pub path_tolerance_mm: f64,
+    /// Replay operations against the in-process stock to detect collisions of
+    /// the tool holder and rapids with uncut material, and to plan only the
+    /// work that is still needed. Can be turned off for speed.
+    #[serde(default = "default_dynamic_stock_check")]
+    pub dynamic_stock_check: bool,
+}
+
+fn default_dynamic_stock_check() -> bool {
+    true
 }
 
 fn default_chordal_tolerance() -> f64 {
@@ -135,6 +144,7 @@ impl Default for MachiningSetup {
             ramp_angle_deg: 3.0,
             chordal_tolerance_mm: default_chordal_tolerance(),
             path_tolerance_mm: default_path_tolerance(),
+            dynamic_stock_check: default_dynamic_stock_check(),
         }
     }
 }

@@ -178,6 +178,20 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                                         egui::RichText::new(format!("{:?}", op.kind)).color(accent),
                                     );
                                 });
+                                if op.auto_planned {
+                                    prop_row(ui, "Planned", |ui| {
+                                        let detail = match (&op.slope_window, op.bores.len()) {
+                                            (Some([lo, hi]), _) => {
+                                                format!("Auto plan · slopes {lo:.0}°–{hi:.0}°")
+                                            }
+                                            (None, holes) if holes > 0 => {
+                                                format!("Auto plan · {holes} hole(s), helical")
+                                            }
+                                            _ => "Auto plan".to_string(),
+                                        };
+                                        ui.label(egui::RichText::new(detail).color(MUTED));
+                                    });
+                                }
 
                                 if matches!(
                                     &op.kind,
@@ -335,7 +349,10 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                                         | crate::cam::operations::OperationKind::FinishRaster3D
                                         | crate::cam::operations::OperationKind::FinishContour3D
                                         | crate::cam::operations::OperationKind::FinishWaterline3D
-                                ) {
+                                ) && !(op.kind
+                                    == crate::cam::operations::OperationKind::HelicalBore
+                                    && !op.bores.is_empty())
+                                {
                                     let sources: Vec<(u64, String, bool)> = app
                                         .project
                                         .layers
@@ -666,6 +683,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
 
 pub fn show_fit_model_dialog(ctx: &egui::Context, app: &mut TekkCamApp) {
     if !app.ui_state.show_fit_model_dialog {
+        app.ui_state.fit_pending_transform = None;
         return;
     }
     let model_index = app
@@ -680,7 +698,14 @@ pub fn show_fit_model_dialog(ctx: &egui::Context, app: &mut TekkCamApp) {
         .or_else(|| app.project.models.iter().position(|model| model.visible));
     let Some(model_index) = model_index else {
         app.ui_state.show_fit_model_dialog = false;
+        app.ui_state.fit_pending_transform = None;
         return;
+    };
+    let current = app.project.models[model_index].transform;
+    // The orientation being tried; the model itself is untouched until Apply.
+    let mut pending = match app.ui_state.fit_pending_transform {
+        Some((index, transform)) if index == model_index => transform,
+        _ => current,
     };
     let tool_clearance = app
         .project
@@ -692,21 +717,69 @@ pub fn show_fit_model_dialog(ctx: &egui::Context, app: &mut TekkCamApp) {
                 + app.project.default_tool.holder_clearance_mm,
             f64::max,
         );
-    let preview =
-        app.project.models[model_index].stock_envelope(&app.project.setup, tool_clearance);
+    let preview = app.project.models[model_index].stock_envelope_with_transform(
+        &app.project.setup,
+        tool_clearance,
+        pending,
+    );
+    let dark = app.ui_state.theme == crate::app::AppTheme::Dark;
+    let units = app.ui_state.display_units;
     let mut open = true;
     let mut apply = false;
     let mut cancel = false;
+    let mut turn: Option<(usize, f64)> = None;
+    let mut revert = false;
     egui::Window::new("Fit stock to model")
         .id(egui::Id::new("fit_stock_to_model_dialog"))
         .collapsible(false)
         .resizable(false)
         .open(&mut open)
         .show(ctx, |ui| {
-            ui.label("The model’s scale, orientation, and position will stay unchanged.");
+            ui.label(
+                "Turn the model so the face you want to machine points up (+Z, the tool side), check the preview, then fit the stock. The model turns about its own centre; scale is unchanged.",
+            );
+            ui.add_space(6.0);
+            let stock = preview
+                .as_ref()
+                .ok()
+                .map(|envelope| (envelope.stock_origin_mm, envelope.stock_size_mm));
+            crate::ui::orientation_preview::show(
+                ui,
+                &app.project.models[model_index],
+                pending,
+                stock,
+                &mut app.ui_state.fit_preview_orbit,
+                dark,
+                230.0,
+            );
+            ui.add_space(6.0);
+            for (axis, name) in ["X", "Y", "Z"].into_iter().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.label(format!("About {name}"));
+                    if ui.button("-90°").clicked() {
+                        turn = Some((axis, -90.0));
+                    }
+                    if ui.button("+90°").clicked() {
+                        turn = Some((axis, 90.0));
+                    }
+                    if ui
+                        .button(format!("Flip {name} 180°"))
+                        .on_hover_text("Turn the model over about this axis")
+                        .clicked()
+                    {
+                        turn = Some((axis, 180.0));
+                    }
+                });
+            }
+            if ui
+                .add_enabled(pending != current, egui::Button::new("Revert orientation"))
+                .clicked()
+            {
+                revert = true;
+            }
+            ui.add_space(6.0);
             match &preview {
                 Ok(envelope) => {
-                    let units = app.ui_state.display_units;
                     let factor = units.factor();
                     let size = envelope.stock_size_mm;
                     ui.label(format!(
@@ -741,12 +814,29 @@ pub fn show_fit_model_dialog(ctx: &egui::Context, app: &mut TekkCamApp) {
                 }
             });
         });
+    if let Some((axis, degrees)) = turn {
+        let bounds = app.project.models[model_index].bounds_with_transform(pending);
+        let pivot: [f64; 3] =
+            std::array::from_fn(|k| (bounds[0][k] as f64 + bounds[1][k] as f64) * 0.5);
+        pending = pending.rotated_about_world_axis(axis, degrees, pivot);
+    }
+    if revert {
+        pending = current;
+    }
     if cancel {
         open = false;
     }
     app.ui_state.show_fit_model_dialog = open;
+    app.ui_state.fit_pending_transform = open.then_some((model_index, pending));
     if apply {
-        if let Ok(envelope) = preview {
+        // Recompute for the final orientation (a turn and Apply cannot share a frame).
+        let envelope = app.project.models[model_index].stock_envelope_with_transform(
+            &app.project.setup,
+            tool_clearance,
+            pending,
+        );
+        if let Ok(envelope) = envelope {
+            app.project.models[model_index].transform = pending;
             app.project.setup.stock_origin_mm = envelope.stock_origin_mm;
             app.project.setup.stock_size_mm = envelope.stock_size_mm;
             invalidate_model_toolpaths(app);
@@ -754,20 +844,107 @@ pub fn show_fit_model_dialog(ctx: &egui::Context, app: &mut TekkCamApp) {
             app.ui_state.request_fit = true;
             app.scene_sig.clear();
             app.ui_state.show_fit_model_dialog = false;
+            app.ui_state.fit_pending_transform = None;
         }
+    } else if turn.is_some() || revert {
+        ctx.request_repaint();
+    }
+}
+
+/// Options for the automatic operation planner.
+pub fn show_auto_plan_dialog(ctx: &egui::Context, app: &mut TekkCamApp) {
+    if !app.ui_state.show_auto_plan_dialog {
+        return;
+    }
+    let mut open = true;
+    let mut run = false;
+    let mut setup_changed = false;
+    egui::Window::new("Auto plan operations")
+        .id(egui::Id::new("auto_plan_dialog"))
+        .collapsible(false)
+        .resizable(false)
+        .open(&mut open)
+        .show(ctx, |ui| {
+            ui.label(
+                "Looks at the model in its stock and picks the operations it needs: roughing, helical bores and finishing. Every operation gets its own colour in the viewport.",
+            );
+            ui.add_space(6.0);
+            let options = &mut app.ui_state.planner_options;
+            prop_row(ui, "Largest roughing end mill (mm)", |ui| {
+                ui.add(
+                    egui::DragValue::new(&mut options.roughing_tool_mm)
+                        .range(0.8..=12.0)
+                        .speed(0.1),
+                );
+            });
+            prop_row(ui, "Largest finishing ball nose (mm)", |ui| {
+                ui.add(
+                    egui::DragValue::new(&mut options.finishing_tool_mm)
+                        .range(0.8..=12.0)
+                        .speed(0.1),
+                );
+            });
+            prop_row(ui, "Steep wall angle (°)", |ui| {
+                ui.add(
+                    egui::DragValue::new(&mut options.steep_angle_deg)
+                        .range(5.0..=85.0)
+                        .speed(0.5),
+                );
+            });
+            prop_row(ui, "Finish if stock left (mm)", |ui| {
+                ui.add(
+                    egui::DragValue::new(&mut options.residual_tolerance_mm)
+                        .range(0.0..=2.0)
+                        .speed(0.01),
+                );
+            });
+            setup_changed |= ui
+                .checkbox(
+                    &mut app.project.setup.dynamic_stock_check,
+                    "Dynamic stock collision check",
+                )
+                .on_hover_text(
+                    "Replay every operation on the in-process stock: reports holder and rapid collisions, skips holes already cleared and plans finishing only where stock remains.",
+                )
+                .changed();
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new(
+                    "Holes are milled with a helical bore using an assumed end mill size; nothing is drilled. Re-planning replaces the operations of the previous plan.",
+                )
+                .size(11.0),
+            );
+            ui.add_space(6.0);
+            if ui
+                .add_enabled(!app.plan_pending, egui::Button::new("Plan operations"))
+                .clicked()
+            {
+                run = true;
+            }
+        });
+    if setup_changed {
+        app.ui_state.project_dirty = true;
+    }
+    app.ui_state.show_auto_plan_dialog = open && !run;
+    if run {
+        app.start_auto_plan();
     }
 }
 
 fn invalidate_model_toolpaths(app: &mut TekkCamApp) {
     for operation in &mut app.project.operations {
-        if matches!(
-            operation.kind,
-            crate::cam::operations::OperationKind::ModelProfile2D
-                | crate::cam::operations::OperationKind::Roughing3D
-                | crate::cam::operations::OperationKind::FinishRaster3D
-                | crate::cam::operations::OperationKind::FinishContour3D
-                | crate::cam::operations::OperationKind::FinishWaterline3D
-        ) {
+        let planned_bores = operation.kind == crate::cam::operations::OperationKind::HelicalBore
+            && !operation.bores.is_empty();
+        if planned_bores
+            || matches!(
+                operation.kind,
+                crate::cam::operations::OperationKind::ModelProfile2D
+                    | crate::cam::operations::OperationKind::Roughing3D
+                    | crate::cam::operations::OperationKind::FinishRaster3D
+                    | crate::cam::operations::OperationKind::FinishContour3D
+                    | crate::cam::operations::OperationKind::FinishWaterline3D
+            )
+        {
             operation.generated = false;
             operation.toolpath = Default::default();
         }
@@ -983,6 +1160,14 @@ pub fn show_setup_dialog(ctx: &egui::Context, app: &mut TekkCamApp) {
                                 .add(
                                     egui::DragValue::new(&mut setup.ramp_angle_deg)
                                         .range(0.0..=45.0),
+                                )
+                                .changed()
+                        });
+                        prop_row(ui, "Dynamic stock check", |ui| {
+                            changed |= ui
+                                .checkbox(&mut setup.dynamic_stock_check, "Collision check")
+                                .on_hover_text(
+                                    "Replay operations on the in-process stock to find holder and rapid collisions, and plan only the work still needed. Turn off for speed.",
                                 )
                                 .changed()
                         });

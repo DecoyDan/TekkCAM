@@ -416,7 +416,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
             let op_count = app.project.operations.len();
 
             // Extract display data for operations
-            let op_display: Vec<(bool, &'static str, String, bool)> = (0..op_count)
+            let op_display: Vec<(bool, &'static str, String, bool, egui::Color32, bool)> = (0..op_count)
                 .map(|i| {
                     let op = &app.project.operations[i];
                     let selected = app.ui_state.selected_operation == Some(i);
@@ -424,6 +424,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                         OperationKind::Isolation => "ISO",
                         OperationKind::Pocket => "POC",
                         OperationKind::Drill => "DRL",
+                        OperationKind::HelicalBore => "HEL",
                         OperationKind::Contour => "CON",
                         OperationKind::ModelProfile2D => "2D",
                         OperationKind::Roughing3D => "R3D",
@@ -433,15 +434,24 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                         OperationKind::Placeholder => "NEW",
                         OperationKind::Custom(_) => "USR",
                     };
-                    (selected, icon, op.name.clone(), op.generated)
+                    let [r, g, b] = crate::cam::operations::operation_color(i);
+                    let swatch = egui::Color32::from_rgb(
+                        (r * 255.0) as u8,
+                        (g * 255.0) as u8,
+                        (b * 255.0) as u8,
+                    );
+                    (selected, icon, op.name.clone(), op.generated, swatch, op.visible)
                 })
                 .collect();
 
             let mut select_op: Option<usize> = None;
             let mut delete_op: Option<usize> = None;
             let mut set_operation_exclusion: Option<(usize, bool)> = None;
+            let mut toggle_operation_visibility: Option<usize> = None;
 
-            for (i, (is_selected, icon, name, generated)) in op_display.iter().enumerate() {
+            for (i, (is_selected, icon, name, generated, swatch, shown)) in
+                op_display.iter().enumerate()
+            {
                 let row_bg = if *is_selected {
                     selected_bg
                 } else {
@@ -455,6 +465,8 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                     egui::Color32::from_rgb(196, 198, 210)
                 };
 
+                // Where the eye is, so a click on it can be told from a click on the row.
+                let mut eye_rect = egui::Rect::NOTHING;
                 let response = egui::Frame::new()
                     .fill(row_bg)
                     .stroke(egui::Stroke::new(
@@ -487,25 +499,93 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                                     egui::FontFamily::Name("download_icon".into()),
                                 ))
                                 .color(state_color);
-                            let content_width = (row_width - 8.0).max(0.0);
-                            let state_width = 14.0_f32.min(content_width);
-                            ui.add_sized(
-                                [(content_width - state_width).max(0.0), 18.0],
-                                egui::Label::new(
-                                    egui::RichText::new(format!("{icon} {name}"))
-                                        .size(13.0)
-                                        .color(row_text),
+                            // Eye | colour dot | name (fills the rest) | state.
+                            let gap = ui.spacing().item_spacing.x;
+                            let eye_width = 22.0_f32;
+                            let dot_width = 12.0_f32;
+                            let state_width = 14.0_f32;
+                            let name_width = (row_width
+                                - eye_width
+                                - dot_width
+                                - state_width
+                                - 3.0 * gap)
+                                .max(0.0);
+
+                            let eye_icon = egui::RichText::new(
+                                (if *shown { ICON_EYE } else { ICON_EYE_OFF }).to_string(),
+                            )
+                            .font(egui::FontId::new(
+                                14.0,
+                                egui::FontFamily::Name("sidebar_icons".into()),
+                            ))
+                            .color(row_text);
+                            let eye = ui
+                                .add_sized(
+                                    [eye_width, 18.0],
+                                    egui::Button::new(eye_icon).frame(false),
                                 )
-                                .truncate(),
+                                .on_hover_text(if *shown {
+                                    "Hide toolpath"
+                                } else {
+                                    "Show toolpath"
+                                });
+                            eye_rect = eye.rect;
+
+                            // Toolpath colour, matching the operation in the viewport
+                            // (hollow until its toolpath has been generated; faded
+                            // while the toolpath is hidden).
+                            let dot_color = if *shown {
+                                *swatch
+                            } else {
+                                swatch.gamma_multiply(0.35)
+                            };
+                            let (dot_rect, _) = ui.allocate_exact_size(
+                                egui::vec2(dot_width, 18.0),
+                                egui::Sense::hover(),
+                            );
+                            if *generated {
+                                ui.painter()
+                                    .circle_filled(dot_rect.center(), 5.0, dot_color);
+                            } else {
+                                ui.painter().circle_stroke(
+                                    dot_rect.center(),
+                                    4.5,
+                                    egui::Stroke::new(1.5_f32, dot_color),
+                                );
+                            }
+
+                            // Left-aligned, truncated name.
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(name_width, 18.0),
+                                egui::Layout::left_to_right(egui::Align::Center),
+                                |ui| {
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(format!("{icon} {name}"))
+                                                .size(13.0)
+                                                .color(row_text),
+                                        )
+                                        .truncate(),
+                                    );
+                                },
                             );
                             ui.add_sized([state_width, 18.0], egui::Label::new(state_text));
                         });
                     })
                     .response;
 
+                // The row-wide click area sits above the eye, so tell the two apart
+                // by where the pointer was.
                 let response = response.interact(egui::Sense::click());
                 if response.clicked() {
-                    select_op = Some(i);
+                    let on_eye = response
+                        .interact_pointer_pos()
+                        .is_some_and(|pointer| eye_rect.expand(2.0).contains(pointer));
+                    if on_eye {
+                        toggle_operation_visibility = Some(i);
+                    } else {
+                        select_op = Some(i);
+                    }
                 }
                 response.context_menu(|ui| {
                     let mut add_to_toolpath =
@@ -526,6 +606,12 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
 
             if let Some(i) = select_op {
                 app.ui_state.selected_operation = Some(i);
+            }
+            if let Some(index) = toggle_operation_visibility {
+                let operation = &mut app.project.operations[index];
+                operation.visible = !operation.visible;
+                app.ui_state.project_dirty = true;
+                app.scene_sig.clear();
             }
             if let Some((index, excluded)) = set_operation_exclusion {
                 app.project.operations[index].excluded_from_toolpath = excluded;

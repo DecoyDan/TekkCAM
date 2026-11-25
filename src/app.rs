@@ -28,9 +28,14 @@ struct GenerationResult {
             crate::cam::toolpath::Toolpath,
             Option<Result<crate::cam::roughing::RemainingStockEstimate, String>>,
             &'static str,
+            Vec<String>,
         ),
         String,
     >,
+}
+
+struct PlanResult {
+    result: Result<crate::cam::auto_plan::PlanOutcome, String>,
 }
 
 fn translate_toolpath_z(path: &mut crate::cam::toolpath::Toolpath, offset: f64) {
@@ -126,6 +131,12 @@ pub struct TekkCamApp {
     generation_tx: Sender<GenerationResult>,
     generation_rx: Receiver<GenerationResult>,
     pub generation_pending: bool,
+    plan_tx: Sender<PlanResult>,
+    plan_rx: Receiver<PlanResult>,
+    plan_progress_tx: Sender<String>,
+    plan_progress_rx: Receiver<String>,
+    plan_cancel: Arc<std::sync::atomic::AtomicBool>,
+    pub plan_pending: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -136,6 +147,8 @@ struct AppPreferences {
     font_size: FontSizeOption,
     selected_machine_port: Option<String>,
     machine_baud_rate: u32,
+    /// Use the GPU for toolpath generation and stock simulation when available.
+    use_gpu: bool,
 }
 
 impl Default for AppPreferences {
@@ -146,6 +159,7 @@ impl Default for AppPreferences {
             font_size: FontSizeOption::Medium,
             selected_machine_port: None,
             machine_baud_rate: 115200,
+            use_gpu: true,
         }
     }
 }
@@ -368,6 +382,14 @@ pub struct UiState {
     pub tool_details: Option<crate::cam::tool::Tool>,
     pub tool_image_cache: std::collections::HashMap<String, Option<egui::TextureHandle>>,
     pub show_fit_model_dialog: bool,
+    pub show_auto_plan_dialog: bool,
+    pub use_gpu: bool,
+    /// Orientation being tried in the "Fit stock to model" dialog (model index
+    /// and transform); applied to the model only when the stock is fitted.
+    pub fit_pending_transform: Option<(usize, crate::workspace::model::ModelTransform)>,
+    /// Yaw/pitch offsets of the orientation preview.
+    pub fit_preview_orbit: [f32; 2],
+    pub planner_options: crate::cam::auto_plan::PlannerOptions,
     pub show_settings: bool,
     pub console_input: String,
     pub text_layer_input: String,
@@ -484,6 +506,11 @@ impl Default for UiState {
             tool_details: None,
             tool_image_cache: std::collections::HashMap::new(),
             show_fit_model_dialog: false,
+            show_auto_plan_dialog: false,
+            use_gpu: true,
+            fit_pending_transform: None,
+            fit_preview_orbit: [0.0, 0.0],
+            planner_options: crate::cam::auto_plan::PlannerOptions::default(),
             show_settings: false,
             console_input: String::new(),
             text_layer_input: String::new(),
@@ -568,6 +595,21 @@ impl TekkCamApp {
         apply_theme(&cc.egui_ctx, preferences.theme);
         apply_font_size(&cc.egui_ctx, preferences.font_size);
 
+        // Share the renderer's GPU with the toolpath and simulation code. Any
+        // failure leaves the CPU path in charge.
+        if let Some(wgpu_render_state) = cc.wgpu_render_state.as_ref() {
+            let info = wgpu_render_state.adapter.get_info();
+            match crate::accel::install_shared(
+                wgpu_render_state.device.clone(),
+                wgpu_render_state.queue.clone(),
+                format!("{} ({:?})", info.name, info.backend),
+            ) {
+                Ok(name) => log::info!("GPU acceleration ready on {name}"),
+                Err(error) => log::warn!("GPU acceleration unavailable: {error}"),
+            }
+        }
+        crate::accel::set_gpu_enabled(preferences.use_gpu);
+
         // ── Register GPU resources for the wgpu viewport callback ─────────
         if let Some(wgpu_render_state) = cc.wgpu_render_state.as_ref() {
             let renderer = ViewportRenderer::new(
@@ -586,6 +628,8 @@ impl TekkCamApp {
 
         let (step_import_tx, step_import_rx) = mpsc::channel();
         let (generation_tx, generation_rx) = mpsc::channel();
+        let (plan_tx, plan_rx) = mpsc::channel();
+        let (plan_progress_tx, plan_progress_rx) = mpsc::channel();
         let mut app = Self {
             project: Project::default(),
             ui_state: UiState::default(),
@@ -604,6 +648,12 @@ impl TekkCamApp {
             generation_tx,
             generation_rx,
             generation_pending: false,
+            plan_tx,
+            plan_rx,
+            plan_progress_tx,
+            plan_progress_rx,
+            plan_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            plan_pending: false,
         };
         app.project.tools = load_tool_database();
         app.project_history.reset(&app.project);
@@ -612,6 +662,8 @@ impl TekkCamApp {
         app.ui_state.font_size = app.preferences.font_size;
         app.ui_state.selected_machine_port = app.preferences.selected_machine_port.clone();
         app.ui_state.machine_baud_rate = app.preferences.machine_baud_rate;
+        app.ui_state.use_gpu = app.preferences.use_gpu;
+        app.ui_state.console_log.push(crate::accel::status());
         app
     }
 
@@ -621,6 +673,7 @@ impl TekkCamApp {
         self.preferences.font_size = self.ui_state.font_size;
         self.preferences.selected_machine_port = self.ui_state.selected_machine_port.clone();
         self.preferences.machine_baud_rate = self.ui_state.machine_baud_rate;
+        self.preferences.use_gpu = self.ui_state.use_gpu;
         if let Err(error) = self.preferences.save() {
             self.ui_state
                 .console_log
@@ -1094,6 +1147,11 @@ impl TekkCamApp {
             .selected_model
             .filter(|i| self.project.models.get(*i).is_some_and(|m| m.visible))
             .or_else(|| self.project.models.iter().position(|m| m.visible));
+        // Planned bores carry their own absolute hole positions and need no layer.
+        let bores_from_features = matches!(
+            &operation.kind,
+            crate::cam::operations::OperationKind::HelicalBore
+        ) && !operation.bores.is_empty();
         let model_required = is_profile || is_roughing || finish_strategy.is_some();
         let model = model_index
             .and_then(|i| self.project.models.get(i))
@@ -1122,7 +1180,7 @@ impl TekkCamApp {
         });
         let surface_layer = source_layer.is_some_and(|layer| uses_stock_surface(&layer.kind));
         let geometry = source_layer.map(|layer| layer.geometry.clone());
-        if !model_required && geometry.is_none() {
+        if !model_required && !bores_from_features && geometry.is_none() {
             self.ui_state
                 .console_log
                 .push("✖ No visible geometry to machine".into());
@@ -1145,6 +1203,15 @@ impl TekkCamApp {
             None
         };
         let plugins = self.plugin_registry.clone();
+        // Dynamic stock check: replay the operations before this one so their
+        // cuts are already missing from the stock. Only model-based operations
+        // use absolute Z, so only those can be compared with the stock.
+        let check_stock = setup.dynamic_stock_check && (model_required || bores_from_features);
+        let earlier_operations: Vec<crate::cam::operations::Operation> = if check_stock {
+            self.project.operations[..index.min(self.project.operations.len())].to_vec()
+        } else {
+            Vec::new()
+        };
         let stock_surface_z = match setup.axis {
             crate::workspace::setup::WorkAxis::ZUp => {
                 setup.stock_origin_mm[2] + setup.stock_size_mm[2]
@@ -1174,16 +1241,17 @@ impl TekkCamApp {
                             None,
                         )?
                     } else {
-                        crate::cam::finishing::generate(
-                            model,
-                            &setup,
-                            &operation.tool,
-                            finish_strategy.unwrap(),
-                            operation.tool.diameter_mm * setup.stepover_percent / 100.0,
-                            operation.margin_mm,
+                        crate::cam::auto_plan::generate_finishing_operation(
+                            model, &setup, &operation,
                         )?
                     };
                     (path, "3D machining")
+                } else if bores_from_features {
+                    operation.generate_from_geometry_with_plugins(
+                        &crate::workspace::object::Geometry::default(),
+                        &plugins,
+                    )?;
+                    (operation.toolpath, "helical bore")
                 } else {
                     operation.generate_from_geometry_with_plugins(
                         geometry.as_ref().expect("validated geometry"),
@@ -1207,7 +1275,23 @@ impl TekkCamApp {
                 } else {
                     None
                 };
-                Ok((path, remaining, label))
+                let mut notes = Vec::new();
+                if check_stock {
+                    let earlier: Vec<&crate::cam::operations::Operation> =
+                        earlier_operations.iter().collect();
+                    match crate::cam::auto_plan::check_against_earlier_operations(
+                        &setup,
+                        &earlier,
+                        &operation.tool,
+                        &path,
+                    ) {
+                        Ok(issues) => {
+                            crate::cam::auto_plan::report_issues(&mut notes, &name, &issues)
+                        }
+                        Err(error) => notes.push(format!("Stock check skipped: {error}")),
+                    }
+                }
+                Ok((path, remaining, label, notes))
             })();
             let _ = tx.send(GenerationResult {
                 index,
@@ -1217,6 +1301,113 @@ impl TekkCamApp {
         });
     }
 
+    /// Plan every operation the visible model needs (roughing, helical bores,
+    /// finishing) on a background thread. Operations from an earlier plan are
+    /// replaced when the new plan arrives; hand-made ones are kept.
+    pub fn start_auto_plan(&mut self) {
+        if self.plan_pending || self.generation_pending {
+            return;
+        }
+        let model_index = self
+            .ui_state
+            .selected_model
+            .filter(|i| self.project.models.get(*i).is_some_and(|m| m.visible))
+            .or_else(|| self.project.models.iter().position(|m| m.visible));
+        let Some(model) = model_index
+            .and_then(|i| self.project.models.get(i))
+            .cloned()
+        else {
+            self.ui_state.console_log.push(
+                "✖ Auto plan needs a visible STEP model that has been fitted to its stock".into(),
+            );
+            self.ui_state.status_message = "No visible STEP model".into();
+            return;
+        };
+        let setup = self.project.setup.clone();
+        let options = self.ui_state.planner_options.clone();
+        let tx = self.plan_tx.clone();
+        self.plan_cancel
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        let control = crate::cam::cancel::Control {
+            cancel: self.plan_cancel.clone(),
+            progress: Some(self.plan_progress_tx.clone()),
+        };
+        self.plan_pending = true;
+        self.ui_state.status_message = format!("Planning operations for '{}'…", model.name);
+        std::thread::spawn(move || {
+            // Lets the generators report progress and stop when cancelled.
+            let _control = crate::cam::cancel::install(control);
+            let result = crate::cam::auto_plan::plan(&model, &setup, &options);
+            let _ = tx.send(PlanResult { result });
+        });
+    }
+
+    /// Ask a running auto plan to stop; it ends at its next checkpoint.
+    pub fn cancel_auto_plan(&mut self) {
+        if self.plan_pending {
+            self.plan_cancel
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            self.ui_state.status_message = "Cancelling auto plan…".into();
+        }
+    }
+
+    fn poll_plan(&mut self) {
+        // Show what the planner is working on; it can take a while on big parts.
+        while let Ok(progress) = self.plan_progress_rx.try_recv() {
+            if self.plan_pending && !self.plan_cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                self.ui_state.status_message = progress;
+            }
+        }
+        let Ok(message) = self.plan_rx.try_recv() else {
+            return;
+        };
+        self.plan_pending = false;
+        self.scene_sig.clear();
+        match message.result {
+            Ok(outcome) => {
+                let removed = self
+                    .project
+                    .operations
+                    .iter()
+                    .filter(|operation| operation.auto_planned)
+                    .count();
+                self.project
+                    .operations
+                    .retain(|operation| !operation.auto_planned);
+                let first_new = self.project.operations.len();
+                let count = outcome.operations.len();
+                self.project.operations.extend(outcome.operations);
+                self.ui_state.selected_operation = (count > 0).then_some(first_new);
+                for note in outcome.notes {
+                    self.ui_state.console_log.push(format!("  {note}"));
+                }
+                self.invalidate_gcode_and_simulation();
+                self.ui_state.project_dirty = true;
+                let replaced = if removed > 0 {
+                    format!(" (replaced {removed} from the previous plan)")
+                } else {
+                    String::new()
+                };
+                self.ui_state
+                    .console_log
+                    .push(format!("✔ Auto plan added {count} operation(s){replaced}"));
+                self.ui_state.status_message = format!("Planned {count} operation(s)");
+            }
+            Err(error) if crate::cam::cancel::was_cancelled(&error) => {
+                self.ui_state
+                    .console_log
+                    .push("Auto plan cancelled; existing operations were not changed.".into());
+                self.ui_state.status_message = "Auto plan cancelled".into();
+            }
+            Err(error) => {
+                self.ui_state
+                    .console_log
+                    .push(format!("✖ Auto plan failed: {error}"));
+                self.ui_state.status_message = "Auto plan failed".into();
+            }
+        }
+    }
+
     fn poll_generation(&mut self) {
         let Ok(result) = self.generation_rx.try_recv() else {
             return;
@@ -1224,7 +1415,8 @@ impl TekkCamApp {
         self.generation_pending = false;
         self.scene_sig.clear();
         match result.result {
-            Ok((path, remaining_stock, label)) => {
+            Ok((path, remaining_stock, label, notes)) => {
+                self.ui_state.console_log.extend(notes);
                 let count = path.moves.len();
                 if let Some(operation) = self.project.operations.get_mut(result.index) {
                     operation.toolpath = path;
@@ -1608,11 +1800,12 @@ impl eframe::App for TekkCamApp {
         self.poll_dialog_result();
         self.poll_step_imports();
         self.poll_generation();
+        self.poll_plan();
         self.poll_machine_events();
         if self.step_imports_pending > 0 {
             ctx.request_repaint_after(std::time::Duration::from_millis(80));
         }
-        if self.generation_pending {
+        if self.generation_pending || self.plan_pending {
             ctx.request_repaint_after(std::time::Duration::from_millis(80));
         }
         if self.ui_state.machine_connected {
@@ -1691,6 +1884,7 @@ impl eframe::App for TekkCamApp {
             properties::show(ctx, self);
         }
         properties::show_fit_model_dialog(ctx, self);
+        properties::show_auto_plan_dialog(ctx, self);
         properties::show_tool_editor(ctx, self);
         properties::show_tool_database_dialog(ctx, self);
         properties::show_setup_dialog(ctx, self);
@@ -1751,6 +1945,7 @@ mod tests {
             font_size: FontSizeOption::Large,
             selected_machine_port: Some("/dev/ttyUSB0".into()),
             machine_baud_rate: 230400,
+            use_gpu: false,
         };
         let json = serde_json::to_string(&preferences).unwrap();
         let decoded: AppPreferences = serde_json::from_str(&json).unwrap();
@@ -1762,5 +1957,12 @@ mod tests {
             Some("/dev/ttyUSB0")
         );
         assert_eq!(decoded.machine_baud_rate, 230400);
+        assert!(!decoded.use_gpu);
+    }
+
+    #[test]
+    fn old_preferences_without_the_gpu_switch_default_to_gpu_on() {
+        let decoded: AppPreferences = serde_json::from_str("{}").unwrap();
+        assert!(decoded.use_gpu);
     }
 }

@@ -391,39 +391,57 @@ impl Scene {
             );
         }
         if view_3d {
-            if let Some(model) = models.iter().find(|model| model.visible) {
-                let extent = (0..3)
-                    .map(|axis| {
-                        let bounds = model.transformed_bounds();
-                        (bounds[1][axis] - bounds[0][axis]).abs()
-                    })
-                    .fold(1.0_f32, f32::max)
-                    * 0.6;
-                for (end, color) in [
-                    ([extent, 0.0, 0.0], [0.95, 0.3, 0.3, 1.0]),
-                    ([0.0, extent, 0.0], [0.35, 0.85, 0.4, 1.0]),
-                    ([0.0, 0.0, extent], [0.35, 0.6, 1.0, 1.0]),
-                ] {
-                    scene.lines.push(Vertex {
-                        pos: project_point(0.0, 0.0, 0.0, true, orbit),
-                        color,
-                    });
-                    scene.lines.push(Vertex {
-                        pos: project_point(end[0], end[1], end[2], true, orbit),
-                        color,
-                    });
-                }
+            // The axis triad always sits at the centre of the stock's top face,
+            // so it follows the stock when it is resized, moved or fitted to a model.
+            let anchor = stock_top_center(setup);
+            let extent = models
+                .iter()
+                .find(|model| model.visible)
+                .map(|model| {
+                    let bounds = model.transformed_bounds();
+                    (0..3)
+                        .map(|axis| (bounds[1][axis] - bounds[0][axis]).abs())
+                        .fold(1.0_f32, f32::max)
+                })
+                .unwrap_or_else(|| {
+                    setup
+                        .stock_size_mm
+                        .iter()
+                        .fold(1.0_f32, |largest, size| largest.max(*size as f32))
+                })
+                * 0.6;
+            for (direction, color) in [
+                ([1.0_f32, 0.0, 0.0], [0.95, 0.3, 0.3, 1.0]),
+                ([0.0, 1.0, 0.0], [0.35, 0.85, 0.4, 1.0]),
+                ([0.0, 0.0, 1.0], [0.35, 0.6, 1.0, 1.0]),
+            ] {
+                scene.lines.push(Vertex {
+                    pos: project_point(anchor[0], anchor[1], anchor[2], true, orbit),
+                    color,
+                });
+                scene.lines.push(Vertex {
+                    pos: project_point(
+                        anchor[0] + direction[0] * extent,
+                        anchor[1] + direction[1] * extent,
+                        anchor[2] + direction[2] * extent,
+                        true,
+                        orbit,
+                    ),
+                    color,
+                });
             }
         }
-        for op in operations
+        for (operation_index, op) in operations
             .iter()
-            .filter(|op| op.generated && !op.excluded_from_toolpath)
+            .enumerate()
+            .filter(|(_, op)| op.generated && !op.excluded_from_toolpath && op.visible)
         {
+            // One colour per operation (as in PowerMill / Fusion 360), so every
+            // operation can be told apart; rapids are a faint trace of it.
+            let [red, green, blue] = crate::cam::operations::operation_color(operation_index);
             let colour = |kind| match kind {
-                MoveKind::Rapid => [0.35, 0.55, 0.95, 0.55],
-                MoveKind::Feed => [1.0, 0.45, 0.15, 1.0],
-                MoveKind::Arc => [0.85, 0.35, 1.0, 1.0],
-                MoveKind::Drill => [1.0, 0.85, 0.15, 1.0],
+                MoveKind::Rapid => [red, green, blue, 0.35],
+                MoveKind::Feed | MoveKind::Arc | MoveKind::Drill => [red, green, blue, 1.0],
             };
             let mut previous: Option<[f32; 3]> = None;
             for mv in &op.toolpath.moves {
@@ -465,6 +483,21 @@ impl Scene {
                 })
             })
     }
+}
+
+/// Centre of the stock's top face in world coordinates.
+fn stock_top_center(setup: &MachiningSetup) -> [f32; 3] {
+    let origin = setup.stock_origin_mm;
+    let size = setup.stock_size_mm;
+    let top = match setup.axis {
+        WorkAxis::ZUp => origin[2] + size[2],
+        WorkAxis::ZDown => origin[2],
+    };
+    [
+        (origin[0] + size[0] * 0.5) as f32,
+        (origin[1] + size[1] * 0.5) as f32,
+        top as f32,
+    ]
 }
 
 fn append_stock_top_surface(scene: &mut Scene, setup: &MachiningSetup, material: StockMaterial) {
@@ -686,22 +719,17 @@ fn append_stock_removal_preview(
 
     for (moves, radius, start_xy) in preview_paths {
         let mut current = [start_xy[0], start_xy[1], top];
+        // Every cut of this path is collected and swept in one batch, on the GPU
+        // when there is one.
+        let mut cuts: Vec<crate::accel::Cut> = Vec::with_capacity(moves.len());
+        let mut cut = |from: [f64; 3], to: [f64; 3]| {
+            cuts.push([from.map(|v| v as f32), to.map(|v| v as f32)]);
+        };
         for movement in &moves {
             match movement {
                 ToolMove::Rapid { to, z } => current = [to[0], to[1], *z],
                 ToolMove::Feed { to, z, .. } => {
-                    apply_cut_segment(
-                        &mut heights,
-                        nx,
-                        ny,
-                        origin,
-                        dx,
-                        dy,
-                        floor,
-                        [current[0], current[1], current[2]],
-                        [to[0], to[1], *z],
-                        radius,
-                    );
+                    cut(current, [to[0], to[1], *z]);
                     current = [to[0], to[1], *z];
                 }
                 ToolMove::Arc {
@@ -726,38 +754,36 @@ fn append_stock_removal_preview(
                             center[1] + radius_arc * angle.sin(),
                             current[2] + (z - current[2]) * t,
                         ];
-                        apply_cut_segment(
-                            &mut heights,
-                            nx,
-                            ny,
-                            origin,
-                            dx,
-                            dy,
-                            floor,
-                            previous,
-                            next,
-                            radius,
-                        );
+                        cut(previous, next);
                         previous = next;
                     }
                     current = [to[0], to[1], *z];
                 }
                 ToolMove::Drill { at, depth, .. } => {
-                    apply_cut_segment(
-                        &mut heights,
-                        nx,
-                        ny,
-                        origin,
-                        dx,
-                        dy,
-                        floor,
-                        [at[0], at[1], top],
-                        [at[0], at[1], *depth],
-                        radius,
-                    );
+                    cut([at[0], at[1], top], [at[0], at[1], *depth]);
                     current = [at[0], at[1], *depth];
                 }
             }
+        }
+        let spec = crate::accel::GridSpec {
+            origin: [origin[0], origin[1]],
+            cell: [dx, dy],
+            columns: nx + 1,
+            rows: ny + 1,
+            floor: floor as f32,
+        };
+        let mut swept: Vec<f32> = heights.iter().map(|height| *height as f32).collect();
+        crate::accel::cut_capsules(
+            &spec,
+            &mut swept,
+            &cuts,
+            crate::accel::CutTool {
+                radius: radius as f32,
+                ball: false,
+            },
+        );
+        for (height, value) in heights.iter_mut().zip(swept) {
+            *height = value as f64;
         }
     }
 
@@ -885,53 +911,6 @@ fn move_to_world(movement: ToolMove, origin: [f64; 3]) -> ToolMove {
     }
 }
 
-fn apply_cut_segment(
-    heights: &mut [f64],
-    nx: usize,
-    ny: usize,
-    origin: [f64; 3],
-    dx: f64,
-    dy: f64,
-    floor: f64,
-    start: [f64; 3],
-    end: [f64; 3],
-    cutter_radius: f64,
-) {
-    // Sample the actual cutter footprint. Expanding by half a grid cell made
-    // each cut visibly oversized and square at the preview's old resolution.
-    let radius = cutter_radius;
-    let min_x = (((start[0].min(end[0]) - radius - origin[0]) / dx).floor() as isize)
-        .clamp(0, nx as isize) as usize;
-    let max_x = (((start[0].max(end[0]) + radius - origin[0]) / dx).ceil() as isize)
-        .clamp(0, nx as isize) as usize;
-    let min_y = (((start[1].min(end[1]) - radius - origin[1]) / dy).floor() as isize)
-        .clamp(0, ny as isize) as usize;
-    let max_y = (((start[1].max(end[1]) + radius - origin[1]) / dy).ceil() as isize)
-        .clamp(0, ny as isize) as usize;
-    let ab = [end[0] - start[0], end[1] - start[1]];
-    let length_sq = ab[0] * ab[0] + ab[1] * ab[1];
-    let radius_sq = radius * radius;
-    for iy in min_y..=max_y {
-        for ix in min_x..=max_x {
-            let x = origin[0] + ix as f64 * dx;
-            let y = origin[1] + iy as f64 * dy;
-            let t = if length_sq > f64::EPSILON {
-                (((x - start[0]) * ab[0] + (y - start[1]) * ab[1]) / length_sq).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            let px = start[0] + ab[0] * t;
-            let py = start[1] + ab[1] * t;
-            let dist_sq = (x - px) * (x - px) + (y - py) * (y - py);
-            if dist_sq <= radius_sq {
-                let cut_z = (start[2] + (end[2] - start[2]) * t).max(floor);
-                let height = &mut heights[iy * (nx + 1) + ix];
-                *height = height.min(cut_z);
-            }
-        }
-    }
-}
-
 fn arc_sweep(start: f64, end: f64, clockwise: bool) -> f64 {
     let mut sweep = end - start;
     if clockwise {
@@ -1051,6 +1030,146 @@ mod tests {
         // Negative CNC Z is below the work plane and projects downward in the view.
         assert!(cut[1] < surface[1]);
         assert_eq!(project_point(4.0, 2.0, -3.0, false, [0.0, 0.0]), [4.0, 2.0]);
+    }
+
+    #[test]
+    fn every_operation_toolpath_gets_its_own_colour() {
+        use crate::cam::operations::{operation_color, Operation};
+        let mut operations = Vec::new();
+        for shift in [0.0, 10.0] {
+            let mut operation = Operation::contour();
+            operation.generated = true;
+            operation.toolpath.push_rapid([shift, 0.0], 5.0);
+            operation.toolpath.push_feed([shift, 0.0], -1.0, 100.0);
+            operation
+                .toolpath
+                .push_feed([shift + 5.0, 0.0], -1.0, 100.0);
+            operation.toolpath.push_rapid([shift + 5.0, 0.0], 5.0);
+            operations.push(operation);
+        }
+        let scene = Scene::build(
+            &[],
+            &[],
+            &operations,
+            0,
+            false,
+            [0.0, 0.0],
+            None,
+            &[],
+            false,
+            &MachiningSetup::default(),
+            false,
+            false,
+            StockMaterial::default(),
+            None,
+        );
+        // Opaque (feed) vertices carry the operation colour; rapids are faint.
+        let feed_colors: Vec<[f32; 3]> = scene
+            .toolpaths
+            .iter()
+            .filter(|vertex| vertex.color[3] > 0.9)
+            .map(|vertex| [vertex.color[0], vertex.color[1], vertex.color[2]])
+            .collect();
+        assert!(feed_colors.contains(&operation_color(0)));
+        assert!(feed_colors.contains(&operation_color(1)));
+        assert_ne!(operation_color(0), operation_color(1));
+        assert!(scene.toolpaths.iter().any(|vertex| vertex.color[3] < 0.5));
+    }
+
+    #[test]
+    fn hidden_operations_are_not_drawn_but_keep_their_colour_slot() {
+        use crate::cam::operations::{operation_color, Operation};
+        let mut operations = Vec::new();
+        for shift in [0.0, 10.0] {
+            let mut operation = Operation::contour();
+            operation.generated = true;
+            operation.toolpath.push_rapid([shift, 0.0], 5.0);
+            operation.toolpath.push_feed([shift, 0.0], -1.0, 100.0);
+            operation
+                .toolpath
+                .push_feed([shift + 5.0, 0.0], -1.0, 100.0);
+            operations.push(operation);
+        }
+        operations[0].visible = false;
+        let scene = Scene::build(
+            &[],
+            &[],
+            &operations,
+            0,
+            false,
+            [0.0, 0.0],
+            None,
+            &[],
+            false,
+            &MachiningSetup::default(),
+            false,
+            false,
+            StockMaterial::default(),
+            None,
+        );
+        let colors: Vec<[f32; 3]> = scene
+            .toolpaths
+            .iter()
+            .map(|vertex| [vertex.color[0], vertex.color[1], vertex.color[2]])
+            .collect();
+        assert!(!colors.is_empty());
+        // Only the second operation is drawn, still in its own (second) colour.
+        assert!(colors.iter().all(|color| *color == operation_color(1)));
+    }
+
+    #[test]
+    fn axis_triad_stays_centered_on_the_stock_top() {
+        let orbit = [0.3, 0.1];
+        let mut setup = MachiningSetup::default();
+        for (origin, size) in [
+            ([0.0, 0.0, 0.0], [100.0, 100.0, 20.0]),
+            ([-40.0, 25.0, -5.0], [300.0, 40.0, 12.0]),
+        ] {
+            setup.stock_origin_mm = origin;
+            setup.stock_size_mm = size;
+            let scene = Scene::build(
+                &[],
+                &[],
+                &[],
+                0,
+                true,
+                orbit,
+                None,
+                &[],
+                false,
+                &setup,
+                false,
+                false,
+                StockMaterial::default(),
+                None,
+            );
+            let top = match setup.axis {
+                WorkAxis::ZUp => origin[2] + size[2],
+                WorkAxis::ZDown => origin[2],
+            };
+            let expected = project_point(
+                (origin[0] + size[0] * 0.5) as f32,
+                (origin[1] + size[1] * 0.5) as f32,
+                top as f32,
+                true,
+                orbit,
+            );
+            // Every axis line starts at the stock-top centre.
+            for color in [
+                [0.95, 0.3, 0.3, 1.0],
+                [0.35, 0.85, 0.4, 1.0],
+                [0.35, 0.6, 1.0, 1.0],
+            ] {
+                let start = scene
+                    .lines
+                    .iter()
+                    .find(|vertex| vertex.color == color)
+                    .expect("axis line present")
+                    .pos;
+                assert!((start[0] - expected[0]).abs() < 1e-3);
+                assert!((start[1] - expected[1]).abs() < 1e-3);
+            }
+        }
     }
 }
 

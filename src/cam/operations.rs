@@ -1,4 +1,5 @@
 use crate::cam::chain::{chain_segments, offset_chain, ramped_pass, DEFAULT_CHAIN_TOLERANCE_MM};
+use crate::cam::helical::{generate_bores, BoreFeature, BoreParams};
 use crate::{
     cam::{
         plugin::PluginRegistry,
@@ -14,6 +15,8 @@ pub enum OperationKind {
     Isolation,
     Pocket,
     Drill,
+    /// Holes milled with a helical interpolation instead of drilled.
+    HelicalBore,
     Contour,
     ModelProfile2D,
     Roughing3D,
@@ -43,6 +46,11 @@ pub struct Operation {
     /// Exclude this operation's generated path from program output.
     #[serde(default)]
     pub excluded_from_toolpath: bool,
+    /// Show this operation's toolpath in the viewport (the eye in the operation
+    /// list). Hiding only affects the display: the G-code and the stock
+    /// simulation still include the operation.
+    #[serde(default = "default_visible")]
+    pub visible: bool,
     #[serde(default)]
     pub toolpath: Toolpath,
     #[serde(default)]
@@ -61,10 +69,45 @@ pub struct Operation {
     /// Pocket stepover as a fraction of tool diameter (Fusion `stepover`).
     #[serde(default = "default_stepover_ratio")]
     pub stepover_ratio: f64,
+    /// Holes to mill, in absolute work coordinates. Used by helical bore
+    /// operations planned from an imported model; empty means "use the drill
+    /// hits of the source layer".
+    #[serde(default)]
+    pub bores: Vec<BoreFeature>,
+    /// Created by the automatic planner (replaced when the plan is re-run).
+    #[serde(default)]
+    pub auto_planned: bool,
+    /// Finishing only: machine just the surfaces whose slope (degrees from
+    /// horizontal) lies in `[min, max]`. `None` machines everything.
+    #[serde(default)]
+    pub slope_window: Option<[f64; 2]>,
+}
+
+/// Distinct toolpath colours, cycled by operation position so every operation
+/// is told apart in the viewport and in the operation list.
+pub const OPERATION_COLORS: [[f32; 3]; 10] = [
+    [1.00, 0.55, 0.12],
+    [0.20, 0.80, 0.95],
+    [0.55, 0.90, 0.25],
+    [0.95, 0.35, 0.80],
+    [0.98, 0.85, 0.20],
+    [0.62, 0.50, 1.00],
+    [1.00, 0.40, 0.38],
+    [0.15, 0.80, 0.62],
+    [0.40, 0.62, 1.00],
+    [0.85, 0.65, 0.40],
+];
+
+pub fn operation_color(index: usize) -> [f32; 3] {
+    OPERATION_COLORS[index % OPERATION_COLORS.len()]
 }
 
 fn default_stepover_ratio() -> f64 {
     0.8
+}
+
+fn default_visible() -> bool {
+    true
 }
 
 impl Operation {
@@ -81,12 +124,16 @@ impl Operation {
             manual_face_selection: false,
             generated: false,
             excluded_from_toolpath: false,
+            visible: true,
             toolpath: Toolpath::default(),
             plugin_parameters: Vec::new(),
             ramp_angle_deg: 0.0,
             peck_depth_mm: 0.0,
             chip_break_mm: 0.0,
             stepover_ratio: default_stepover_ratio(),
+            bores: Vec::new(),
+            auto_planned: false,
+            slope_window: None,
         }
     }
     pub fn isolation() -> Self {
@@ -109,6 +156,20 @@ impl Operation {
             kind: OperationKind::Drill,
             tool: Tool {
                 diameter_mm: 0.8,
+                ..Default::default()
+            },
+            ..Self::placeholder()
+        }
+    }
+    /// Helical bore: mills holes with a helix instead of drilling them. Meant
+    /// for low-torque, high-RPM spindles.
+    pub fn helical_bore() -> Self {
+        Self {
+            name: "Helical Bore".into(),
+            kind: OperationKind::HelicalBore,
+            tool: Tool {
+                name: "End Mill 2mm".into(),
+                diameter_mm: 2.0,
                 ..Default::default()
             },
             ..Self::placeholder()
@@ -213,6 +274,12 @@ impl Operation {
         if self.kind == OperationKind::Drill && geometry.drills.is_empty() {
             return Err("selected geometry contains no drill hits".into());
         }
+        if self.kind == OperationKind::HelicalBore
+            && self.bores.is_empty()
+            && geometry.drills.is_empty()
+        {
+            return Err("selected geometry contains no holes to bore".into());
+        }
         if self.kind == OperationKind::ModelProfile2D && geometry.lines.is_empty() {
             return Err("selected geometry contains no profile edges".into());
         }
@@ -227,6 +294,31 @@ impl Operation {
                 self.peck_depth_mm,
                 self.chip_break_mm,
             ),
+            OperationKind::HelicalBore => {
+                let features: Vec<BoreFeature> = if self.bores.is_empty() {
+                    geometry
+                        .drills
+                        .iter()
+                        .map(|hit| BoreFeature {
+                            center: [hit.x, hit.y],
+                            diameter_mm: hit.diameter,
+                            top_z: 0.0,
+                            bottom_z: depth,
+                        })
+                        .collect()
+                } else {
+                    self.bores.clone()
+                };
+                path = generate_bores(
+                    &features,
+                    &self.tool,
+                    &BoreParams {
+                        stepdown_mm: self.depth_per_pass_mm,
+                        stepover_ratio: self.stepover_ratio.min(0.5),
+                        path_tolerance_mm: 0.02,
+                    },
+                )?;
+            }
             OperationKind::Pocket => generate_pocket(
                 &mut path,
                 geometry,
@@ -647,6 +739,11 @@ mod tests {
         assert_eq!(loaded.ramp_angle_deg, 0.0);
         assert_eq!(loaded.peck_depth_mm, 0.0);
         assert_eq!(loaded.stepover_ratio, 0.8);
+        // Projects saved before the eye existed show every operation.
+        let mut value = serde_json::to_value(&o).unwrap();
+        value.as_object_mut().unwrap().remove("visible");
+        let loaded: Operation = serde_json::from_value(value).unwrap();
+        assert!(loaded.visible);
     }
 
     #[test]
