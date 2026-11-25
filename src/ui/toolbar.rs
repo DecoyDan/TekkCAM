@@ -489,24 +489,8 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                         )
                         .clicked()
                     {
-                        app.ui_state.simulator.stop();
-                        if app.ui_state.gcode_text.trim().is_empty() {
-                            app.generate_gcode();
-                        }
-                        match crate::gcode::parser::parse(&app.ui_state.gcode_text) {
-                            Ok(moves) => {
-                                app.ui_state.simulation_moves = moves;
-                                app.ui_state.simulator.reset();
-                                app.ui_state.status_message = "Simulating G-code".into();
-                                ctx.request_repaint();
-                            }
-                            Err(error) => {
-                                app.ui_state.status_message = "Simulation failed".into();
-                                app.ui_state
-                                    .console_log
-                                    .push(format!("✖ Simulation failed: {error}"));
-                            }
-                        }
+                        app.start_simulation();
+                        ctx.request_repaint();
                     }
                     if ui
                         .add(

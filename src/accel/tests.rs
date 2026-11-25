@@ -229,7 +229,7 @@ fn cpu_cutting_lowers_only_nodes_inside_the_cutter_and_respects_the_floor() {
     let mut heights = vec![10.0_f32; spec.columns * spec.rows];
     let tool = CutTool {
         radius: 2.0,
-        ball: false,
+        corner: 0.0,
     };
     cut_capsules_cpu(
         &spec,
@@ -260,10 +260,7 @@ fn cpu_cutting_lowers_only_nodes_inside_the_cutter_and_respects_the_floor() {
 #[test]
 fn ball_nose_cuts_leave_a_curved_floor_and_cut_order_does_not_matter() {
     let spec = grid();
-    let tool = CutTool {
-        radius: 2.0,
-        ball: true,
-    };
+    let tool = CutTool::ball(2.0);
     let cuts = random_cuts(50);
     let mut forward = vec![10.0_f32; spec.columns * spec.rows];
     cut_capsules_cpu(&spec, &mut forward, &cuts, tool);
@@ -295,7 +292,11 @@ fn gpu_cutting_matches_the_cpu_reference() {
     let Some(gpu) = gpu_or_skip() else { return };
     let spec = grid();
     for ball in [false, true] {
-        let tool = CutTool { radius: 1.75, ball };
+        let tool = if ball {
+            CutTool::ball(1.75)
+        } else {
+            CutTool::flat(1.75)
+        };
         let cuts = random_cuts(400);
         let mut expected = vec![10.0_f32; spec.columns * spec.rows];
         cut_capsules_cpu(&spec, &mut expected, &cuts, tool);
@@ -319,7 +320,7 @@ fn gpu_cutting_handles_many_segments_in_several_dispatches() {
     let spec = grid();
     let tool = CutTool {
         radius: 0.6,
-        ball: false,
+        corner: 0.0,
     };
     let cuts = random_cuts(70_000);
     let mut expected = vec![10.0_f32; spec.columns * spec.rows];
@@ -341,7 +342,7 @@ fn a_vertical_plunge_cuts_down_to_its_lowest_point_on_cpu_and_gpu() {
     // the CPU's f64 and the GPU's f32 may legitimately disagree.
     let tool = CutTool {
         radius: 1.01,
-        ball: false,
+        corner: 0.0,
     };
     let cuts = [[[10.0, 9.8, 12.0], [10.0, 9.8, 3.0]]];
     let mut cpu = vec![10.0_f32; spec.columns * spec.rows];
@@ -426,7 +427,7 @@ fn bench_gpu_vs_cpu() {
         .collect();
     let tool = CutTool {
         radius: 1.5,
-        ball: false,
+        corner: 0.0,
     };
     let mut on_cpu = vec![10.0_f32; spec.columns * spec.rows];
     let started = Instant::now();

@@ -1,3 +1,4 @@
+pub mod adaptive;
 pub mod auto_plan;
 pub mod cancel;
 pub mod chain;

@@ -1,5 +1,6 @@
 pub mod camera;
 pub mod grid;
+pub mod lighting;
 pub mod pipeline;
 
 use std::sync::Arc;
@@ -23,6 +24,9 @@ impl ViewportRenderer {
         _queue: &wgpu::Queue,
         target_format: wgpu::TextureFormat,
     ) -> Self {
+        // Lighting is baked into vertex colours, so it has to know whether the
+        // framebuffer encodes sRGB on write.
+        lighting::set_target_is_srgb(target_format.is_srgb());
         let grid = GridRenderer::new(device, target_format);
         let geometry = GeometryRenderer::new(device, target_format);
         Self {

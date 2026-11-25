@@ -428,6 +428,8 @@ pub struct UiState {
     pub simulator: crate::gcode::simulator::Simulator,
     pub show_gcode_editor: bool,
     pub simulation_moves: Vec<crate::cam::toolpath::ToolMove>,
+    /// Which operation (and tool) each part of `simulation_moves` belongs to.
+    pub simulation_ranges: Vec<crate::gcode::simulator::SimulationRange>,
     pub simulation_speed: f32,
     pub show_machine_dialog: bool,
     pub show_machine_controls: bool,
@@ -547,6 +549,7 @@ impl Default for UiState {
             simulator: crate::gcode::simulator::Simulator::default(),
             show_gcode_editor: false,
             simulation_moves: Vec::new(),
+            simulation_ranges: Vec::new(),
             simulation_speed: 1.0,
             show_machine_dialog: false,
             show_machine_controls: false,
@@ -764,8 +767,67 @@ impl TekkCamApp {
     /// Drop generated output whenever an operation or its source geometry changes.
     pub fn invalidate_gcode_and_simulation(&mut self) {
         self.ui_state.gcode_text.clear();
+        self.invalidate_simulation();
+    }
+
+    /// Forget the running/finished simulation (it is rebuilt by Simulate).
+    pub fn invalidate_simulation(&mut self) {
         self.ui_state.simulation_moves.clear();
+        self.ui_state.simulation_ranges.clear();
         self.ui_state.simulator = crate::gcode::simulator::Simulator::default();
+    }
+
+    /// Start simulating the visible, generated operations. Each operation is
+    /// posted and parsed on its own so the simulation knows which tool cuts
+    /// where; operations hidden with the eye in the operation list are left out.
+    pub fn start_simulation(&mut self) {
+        self.ui_state.simulator.stop();
+        let mut moves = Vec::new();
+        let mut ranges = Vec::new();
+        for (index, operation) in self.project.operations.iter().enumerate() {
+            let simulated = operation.generated
+                && !operation.excluded_from_toolpath
+                && operation.visible
+                && !operation.toolpath.is_empty();
+            if !simulated {
+                continue;
+            }
+            let program = crate::gcode::generator::generate_with_setup(
+                std::slice::from_ref(operation),
+                self.project.post_dialect,
+                &self.project.setup,
+            )
+            .and_then(|text| crate::gcode::parser::parse(&text));
+            match program {
+                Ok(parsed) => {
+                    moves.extend(parsed);
+                    ranges.push(crate::gcode::simulator::SimulationRange {
+                        end: moves.len(),
+                        tool: operation.tool.clone(),
+                        operation_index: index,
+                    });
+                }
+                Err(error) => {
+                    self.ui_state.status_message = "Simulation failed".into();
+                    self.ui_state.console_log.push(format!(
+                        "✖ Simulation of '{}' failed: {error}",
+                        operation.name
+                    ));
+                    return;
+                }
+            }
+        }
+        if moves.is_empty() {
+            self.ui_state.status_message = "Nothing to simulate".into();
+            self.ui_state
+                .console_log
+                .push("Nothing to simulate: generate at least one visible operation first".into());
+            return;
+        }
+        self.ui_state.simulation_moves = moves;
+        self.ui_state.simulation_ranges = ranges;
+        self.ui_state.simulator.reset();
+        self.ui_state.status_message = "Simulating visible operations".into();
     }
 
     pub fn reset_stock_surface(&mut self) {
@@ -1233,12 +1295,8 @@ impl TekkCamApp {
                 } else if is_roughing || finish_strategy.is_some() {
                     let model = model.as_ref().expect("validated visible model");
                     let path = if is_roughing {
-                        crate::cam::roughing::generate(
-                            model,
-                            &setup,
-                            &operation.tool,
-                            operation.margin_mm,
-                            None,
+                        crate::cam::auto_plan::generate_roughing_operation(
+                            model, &setup, &operation,
                         )?
                     } else {
                         crate::cam::auto_plan::generate_finishing_operation(
@@ -1325,6 +1383,13 @@ impl TekkCamApp {
         };
         let setup = self.project.setup.clone();
         let options = self.ui_state.planner_options.clone();
+        // Cutters come from the tool library: the built-in tools plus the user's.
+        let mut library = crate::cam::tool::built_in_tools();
+        for tool in &self.project.tools {
+            if !library.iter().any(|known| known.name == tool.name) {
+                library.push(tool.clone());
+            }
+        }
         let tx = self.plan_tx.clone();
         self.plan_cancel
             .store(false, std::sync::atomic::Ordering::Relaxed);
@@ -1337,7 +1402,7 @@ impl TekkCamApp {
         std::thread::spawn(move || {
             // Lets the generators report progress and stop when cancelled.
             let _control = crate::cam::cancel::install(control);
-            let result = crate::cam::auto_plan::plan(&model, &setup, &options);
+            let result = crate::cam::auto_plan::plan(&model, &setup, &options, &library);
             let _ = tx.send(PlanResult { result });
         });
     }

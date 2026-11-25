@@ -316,6 +316,13 @@ impl Operation {
                         stepdown_mm: self.depth_per_pass_mm,
                         stepover_ratio: self.stepover_ratio.min(0.5),
                         path_tolerance_mm: 0.02,
+                        // A ramp angle set on the operation applies; otherwise
+                        // the gentle default.
+                        ramp_angle_deg: if self.ramp_angle_deg > 0.0 {
+                            self.ramp_angle_deg
+                        } else {
+                            crate::cam::helical::DEFAULT_RAMP_ANGLE_DEG
+                        },
                     },
                 )?;
             }

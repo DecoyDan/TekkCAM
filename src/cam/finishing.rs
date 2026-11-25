@@ -453,7 +453,9 @@ fn ensure_path_inside_stock(
     setup: &MachiningSetup,
     tool: &Tool,
 ) -> Result<(), String> {
-    let margin = tool.diameter_mm * 0.5;
+    // The cutter centre stays over the stock; the cutter itself may overhang the
+    // edge (it cuts air there), which lets a large cutter work close to the edge.
+    let margin = 0.0;
     let min = setup.stock_origin_mm;
     let max = [
         min[0] + setup.stock_size_mm[0],
@@ -632,7 +634,7 @@ fn plane_segments(model: &Model, z: f64, slope: SlopeWindow) -> Vec<[[f64; 2]; 2
     segments
 }
 
-fn stitch_segments(segments: Vec<[[f64; 2]; 2]>, tolerance: f64) -> Vec<Vec<[f64; 2]>> {
+pub(crate) fn stitch_segments(segments: Vec<[[f64; 2]; 2]>, tolerance: f64) -> Vec<Vec<[f64; 2]>> {
     let key = |p: [f64; 2]| {
         (
             (p[0] / tolerance).round() as i64,
