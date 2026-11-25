@@ -52,15 +52,16 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                     crate::renderer::pipeline::StockMaterial::Aluminum,
                     crate::renderer::pipeline::StockMaterial::Steel,
                 ] {
-                    if ui
+                    let material_changed = ui
                         .selectable_value(
                             &mut app.project.stock_material,
                             material,
                             material.label(),
                         )
-                        .changed()
-                    {
+                        .changed();
+                    if material_changed {
                         app.ui_state.project_dirty = true;
+                        preferences_changed = true;
                     }
                 }
             });

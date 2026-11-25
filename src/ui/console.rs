@@ -59,11 +59,7 @@ pub fn show_in_sidebar(ui: &mut egui::Ui, ctx: &egui::Context, app: &mut TekkCam
     });
     ui.horizontal(|ui| {
         let dark = app.ui_state.theme == crate::app::AppTheme::Dark;
-        let active_fill = if dark {
-            crate::ui::palette::SWISS_PLUM
-        } else {
-            crate::ui::palette::LIGHT_ACCENT_BLUE
-        };
+        let active_fill = crate::ui::palette::SWISS_PLUM;
         egui::Frame::new()
             .fill(if dark {
                 crate::ui::palette::MYSTERIOUS_DEPTHS

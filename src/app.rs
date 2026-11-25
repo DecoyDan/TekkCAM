@@ -145,6 +145,7 @@ struct AppPreferences {
     display_units: DisplayUnits,
     theme: AppTheme,
     font_size: FontSizeOption,
+    render_material: crate::renderer::pipeline::StockMaterial,
     selected_machine_port: Option<String>,
     machine_baud_rate: u32,
     /// Use the GPU for toolpath generation and stock simulation when available.
@@ -157,6 +158,7 @@ impl Default for AppPreferences {
             display_units: DisplayUnits::Millimeters,
             theme: AppTheme::Dark,
             font_size: FontSizeOption::Medium,
+            render_material: crate::renderer::pipeline::StockMaterial::Aluminum,
             selected_machine_port: None,
             machine_baud_rate: 115200,
             use_gpu: true,
@@ -634,7 +636,10 @@ impl TekkCamApp {
         let (plan_tx, plan_rx) = mpsc::channel();
         let (plan_progress_tx, plan_progress_rx) = mpsc::channel();
         let mut app = Self {
-            project: Project::default(),
+            project: Project {
+                stock_material: preferences.render_material,
+                ..Project::default()
+            },
             ui_state: UiState::default(),
             camera: Camera2D::default(),
             scene: Arc::new(Scene::default()),
@@ -674,6 +679,7 @@ impl TekkCamApp {
         self.preferences.display_units = self.ui_state.display_units;
         self.preferences.theme = self.ui_state.theme;
         self.preferences.font_size = self.ui_state.font_size;
+        self.preferences.render_material = self.project.stock_material;
         self.preferences.selected_machine_port = self.ui_state.selected_machine_port.clone();
         self.preferences.machine_baud_rate = self.ui_state.machine_baud_rate;
         self.preferences.use_gpu = self.ui_state.use_gpu;
@@ -724,6 +730,7 @@ impl TekkCamApp {
     pub fn create_new_project(&mut self) {
         let mut project = Project {
             name: "Untitled".into(),
+            stock_material: self.preferences.render_material,
             ..Project::default()
         };
         project.tools = load_tool_database();
@@ -1579,6 +1586,26 @@ impl TekkCamApp {
         });
     }
 
+    pub fn request_step_open_dialog(&mut self, ctx: &egui::Context) {
+        if self.ui_state.dialog_pending {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        let repaint = ctx.clone();
+        self.ui_state.dialog_receiver = Some(rx);
+        self.ui_state.dialog_pending = true;
+        self.ui_state.status_message = "Opening STEP file dialog…".into();
+        let dialog = rfd::AsyncFileDialog::new()
+            .set_title("Add STEP file")
+            .add_filter("STEP models", &["step", "stp"])
+            .pick_file();
+        std::thread::spawn(move || {
+            let files = pollster::block_on(dialog).map(|handle| vec![handle.path().to_path_buf()]);
+            let _ = tx.send(DialogResult::Open(files));
+            repaint.request_repaint();
+        });
+    }
+
     pub fn request_project_open_dialog(&mut self, ctx: &egui::Context) {
         if self.ui_state.dialog_pending {
             return;
@@ -2008,6 +2035,7 @@ mod tests {
             display_units: DisplayUnits::Inches,
             theme: AppTheme::Light,
             font_size: FontSizeOption::Large,
+            render_material: crate::renderer::pipeline::StockMaterial::Steel,
             selected_machine_port: Some("/dev/ttyUSB0".into()),
             machine_baud_rate: 230400,
             use_gpu: false,

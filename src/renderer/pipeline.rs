@@ -49,8 +49,8 @@ fn wood_color(u: f32, v: f32) -> [f32; 3] {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum StockMaterial {
-    #[default]
     Wood,
+    #[default]
     Aluminum,
     Steel,
 }

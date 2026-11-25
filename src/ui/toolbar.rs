@@ -8,6 +8,7 @@ const ICON_LAYOUT_SIDEBAR_RIGHT: char = '\u{EBF4}';
 const ICON_LAYOUT_SIDEBAR_RIGHT_OFF: char = '\u{EC00}';
 const ICON_PLUS: char = '\u{F067}';
 const ICON_CUBE_OUTLINE: char = '\u{F01A7}';
+const ICON_CHECK: char = '\u{F00C}';
 
 pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
     let accent = if app.ui_state.theme == crate::app::AppTheme::Dark {
@@ -380,11 +381,37 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                                     crate::cam::operations::OperationKind::ModelProfile2D
                                 )
                             });
-                    let face_selection_label = if app.ui_state.face_selection_mode {
-                        "✓ Select Faces"
+                    let icon = if app.ui_state.face_selection_mode {
+                        ICON_CHECK
                     } else {
-                        "◇ Select Faces"
+                        ICON_CUBE_OUTLINE
                     };
+                    let mut face_selection_label = egui::text::LayoutJob::default();
+                    face_selection_label.append(
+                        &icon.to_string(),
+                        0.0,
+                        egui::TextFormat {
+                            font_id: egui::FontId::new(
+                                14.0,
+                                egui::FontFamily::Name(
+                                    if app.ui_state.face_selection_mode {
+                                        "download_icon".into()
+                                    } else {
+                                        "sidebar_icons".into()
+                                    },
+                                ),
+                            ),
+                            ..Default::default()
+                        },
+                    );
+                    face_selection_label.append(
+                        " Select Faces",
+                        0.0,
+                        egui::TextFormat {
+                            font_id: egui::FontId::proportional(14.0),
+                            ..Default::default()
+                        },
+                    );
                     if ui
                         .add_enabled(
                             can_select_model_faces,

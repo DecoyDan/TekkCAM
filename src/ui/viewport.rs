@@ -127,6 +127,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
 }
 
 fn show_simulation_controls(ctx: &egui::Context, app: &mut TekkCamApp) {
+    let dark = app.ui_state.theme == crate::app::AppTheme::Dark;
     let move_count = app.ui_state.simulation_moves.len();
     let completed =
         app.ui_state.simulator.move_index as f32 + app.ui_state.simulator.fraction as f32;
@@ -136,30 +137,44 @@ fn show_simulation_controls(ctx: &egui::Context, app: &mut TekkCamApp) {
         .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -50.0))
         .show(ctx, |ui| {
             egui::Frame::new()
-                .fill(egui::Color32::from_rgba_premultiplied(18, 22, 30, 238))
+                .fill(if dark {
+                    egui::Color32::from_rgba_premultiplied(18, 22, 30, 238)
+                } else {
+                    egui::Color32::from_rgb(242, 243, 249)
+                })
                 .stroke(egui::Stroke::new(
                     1.0_f32,
-                    egui::Color32::from_rgb(65, 83, 108),
+                    if dark {
+                        egui::Color32::from_rgb(65, 83, 108)
+                    } else {
+                        egui::Color32::from_rgb(211, 213, 226)
+                    },
                 ))
                 .corner_radius(egui::CornerRadius::same(7))
                 .inner_margin(egui::Margin::symmetric(10, 7))
                 .show(ui, |ui| {
                     ui.set_min_width(720.0);
                     ui.horizontal(|ui| {
-                        let play_pause = ui
-                            .add_sized(
-                                [30.0, 24.0],
-                                egui::Button::new(if app.ui_state.simulator.running {
-                                    "⏸"
-                                } else {
-                                    "▶"
-                                }),
-                            )
-                            .on_hover_text(if app.ui_state.simulator.running {
+                        let mut play_button = egui::Button::new(
+                            egui::RichText::new(if app.ui_state.simulator.running {
+                                "⏸"
+                            } else {
+                                "▶"
+                            })
+                            .color(egui::Color32::WHITE),
+                        );
+                        if !dark {
+                            play_button = play_button
+                                .fill(crate::ui::palette::SWISS_PLUM)
+                                .stroke(egui::Stroke::NONE);
+                        }
+                        let play_pause = ui.add_sized([30.0, 24.0], play_button).on_hover_text(
+                            if app.ui_state.simulator.running {
                                 "Pause simulation"
                             } else {
                                 "Play simulation"
-                            });
+                            },
+                        );
                         if play_pause.clicked() {
                             if app.ui_state.simulator.running {
                                 app.ui_state.simulator.stop();
@@ -172,13 +187,24 @@ fn show_simulation_controls(ctx: &egui::Context, app: &mut TekkCamApp) {
                             }
                             ctx.request_repaint();
                         }
-                        let default_slider_width = ui.spacing().slider_width;
-                        ui.spacing_mut().slider_width = 480.0;
-                        let slider = ui.add_sized(
-                            [480.0, 18.0],
-                            egui::Slider::new(&mut progress, 0.0..=1.0).show_value(false),
-                        );
-                        ui.spacing_mut().slider_width = default_slider_width;
+                        let slider = ui
+                            .scope(|ui| {
+                                let default_slider_width = ui.spacing().slider_width;
+                                ui.spacing_mut().slider_width = 480.0;
+                                if !dark {
+                                    ui.visuals_mut().selection.bg_fill =
+                                        crate::ui::palette::SWISS_PLUM;
+                                    ui.visuals_mut().selection.stroke.color =
+                                        crate::ui::palette::SWISS_PLUM;
+                                }
+                                let slider = ui.add_sized(
+                                    [480.0, 18.0],
+                                    egui::Slider::new(&mut progress, 0.0..=1.0).show_value(false),
+                                );
+                                ui.spacing_mut().slider_width = default_slider_width;
+                                slider
+                            })
+                            .inner;
                         if slider.changed() {
                             app.ui_state
                                 .simulator
@@ -187,11 +213,28 @@ fn show_simulation_controls(ctx: &egui::Context, app: &mut TekkCamApp) {
                         ui.label(format!("{:.0}%", progress * 100.0));
                         ui.separator();
                         for speed in [1.0_f32, 2.5, 5.0, 10.0] {
-                            ui.selectable_value(
-                                &mut app.ui_state.simulation_speed,
-                                speed,
-                                format!("{speed}×"),
-                            );
+                            let selected = app.ui_state.simulation_speed == speed;
+                            let text_color = if selected {
+                                egui::Color32::WHITE
+                            } else if dark {
+                                egui::Color32::from_rgb(165, 168, 185)
+                            } else {
+                                egui::Color32::from_rgb(72, 75, 106)
+                            };
+                            let speed_button = egui::Button::new(
+                                egui::RichText::new(format!("{speed}×")).color(text_color),
+                            )
+                            .selected(selected)
+                            .fill(if selected {
+                                crate::ui::palette::SWISS_PLUM
+                            } else {
+                                egui::Color32::TRANSPARENT
+                            })
+                            .stroke(egui::Stroke::NONE)
+                            .corner_radius(egui::CornerRadius::same(4));
+                            if ui.add(speed_button).clicked() {
+                                app.ui_state.simulation_speed = speed;
+                            }
                         }
                     });
                 });
@@ -199,23 +242,52 @@ fn show_simulation_controls(ctx: &egui::Context, app: &mut TekkCamApp) {
 }
 
 fn show_stock_render_controls(ctx: &egui::Context, app: &mut TekkCamApp, viewport: egui::Rect) {
+    let dark = app.ui_state.theme == crate::app::AppTheme::Dark;
     egui::Area::new(egui::Id::new("stock_render_controls"))
         .order(egui::Order::Middle)
         .fixed_pos(egui::pos2(viewport.left() + 12.0, viewport.bottom() - 12.0))
         .pivot(egui::Align2::LEFT_BOTTOM)
         .show(ctx, |ui| {
             egui::Frame::new()
-                .fill(egui::Color32::from_rgba_premultiplied(18, 22, 30, 225))
+                .fill(if dark {
+                    egui::Color32::from_rgba_premultiplied(18, 22, 30, 225)
+                } else {
+                    egui::Color32::from_rgb(215, 217, 229)
+                })
                 .stroke(egui::Stroke::new(
                     1.0_f32,
-                    egui::Color32::from_rgb(65, 83, 108),
+                    if dark {
+                        egui::Color32::from_rgb(65, 83, 108)
+                    } else {
+                        egui::Color32::from_rgb(211, 213, 226)
+                    },
                 ))
                 .corner_radius(egui::CornerRadius::same(6))
                 .inner_margin(egui::Margin::symmetric(7, 5))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
+                        let view_button = |label: &str, selected: bool| {
+                            let text_color = if selected {
+                                egui::Color32::WHITE
+                            } else if dark {
+                                egui::Color32::from_rgb(165, 168, 185)
+                            } else {
+                                egui::Color32::from_rgb(72, 75, 106)
+                            };
+                            egui::Button::new(
+                                egui::RichText::new(label).size(12.0).color(text_color),
+                            )
+                            .selected(selected)
+                            .fill(if selected {
+                                crate::ui::palette::SWISS_PLUM
+                            } else {
+                                egui::Color32::TRANSPARENT
+                            })
+                            .stroke(egui::Stroke::NONE)
+                            .corner_radius(egui::CornerRadius::same(4))
+                        };
                         if ui
-                            .selectable_label(!app.ui_state.show_3d_view, "2D")
+                            .add(view_button("2D", !app.ui_state.show_3d_view))
                             .clicked()
                         {
                             app.ui_state.show_3d_view = false;
@@ -223,10 +295,10 @@ fn show_stock_render_controls(ctx: &egui::Context, app: &mut TekkCamApp, viewpor
                             app.ui_state.request_fit = true;
                         }
                         if ui
-                            .selectable_label(
-                                app.ui_state.show_3d_view && !app.ui_state.render_stock,
+                            .add(view_button(
                                 "3D",
-                            )
+                                app.ui_state.show_3d_view && !app.ui_state.render_stock,
+                            ))
                             .clicked()
                         {
                             app.ui_state.show_3d_view = true;
@@ -236,7 +308,7 @@ fn show_stock_render_controls(ctx: &egui::Context, app: &mut TekkCamApp, viewpor
                             app.ui_state.request_fit = true;
                         }
                         if ui
-                            .selectable_label(app.ui_state.render_stock, "Render")
+                            .add(view_button("Render", app.ui_state.render_stock))
                             .clicked()
                         {
                             app.ui_state.show_3d_view = true;
@@ -249,6 +321,7 @@ fn show_stock_render_controls(ctx: &egui::Context, app: &mut TekkCamApp, viewpor
 }
 
 fn show_simulation_dro(ctx: &egui::Context, ui: &egui::Ui, app: &TekkCamApp, viewport: egui::Rect) {
+    let dark = app.ui_state.theme == crate::app::AppTheme::Dark;
     let visible = !app.ui_state.simulation_moves.is_empty();
     let animation = ctx.animate_value_with_time(
         egui::Id::new("simulation_dro_slide"),
@@ -280,19 +353,27 @@ fn show_simulation_dro(ctx: &egui::Context, ui: &egui::Ui, app: &TekkCamApp, vie
     painter.rect_filled(
         rect,
         egui::CornerRadius::same(6),
-        egui::Color32::from_rgba_premultiplied(
-            (18.0 * animation) as u8,
-            (22.0 * animation) as u8,
-            (30.0 * animation) as u8,
-            (230.0 * animation) as u8,
-        ),
+        if dark {
+            egui::Color32::from_rgba_premultiplied(
+                (18.0 * animation) as u8,
+                (22.0 * animation) as u8,
+                (30.0 * animation) as u8,
+                (230.0 * animation) as u8,
+            )
+        } else {
+            egui::Color32::from_rgba_unmultiplied(242, 243, 249, (248.0 * animation) as u8)
+        },
     );
     painter.rect_stroke(
         rect,
         egui::CornerRadius::same(6),
         egui::Stroke::new(
             1.0_f32,
-            egui::Color32::from_rgba_unmultiplied(65, 83, 108, (255.0 * animation) as u8),
+            if dark {
+                egui::Color32::from_rgba_unmultiplied(65, 83, 108, (255.0 * animation) as u8)
+            } else {
+                egui::Color32::from_rgba_unmultiplied(211, 213, 226, (255.0 * animation) as u8)
+            },
         ),
         egui::StrokeKind::Inside,
     );
@@ -301,7 +382,11 @@ fn show_simulation_dro(ctx: &egui::Context, ui: &egui::Ui, app: &TekkCamApp, vie
         egui::Align2::LEFT_TOP,
         "SIMULATION DRO",
         egui::FontId::proportional(9.0),
-        egui::Color32::from_rgba_unmultiplied(115, 205, 145, (255.0 * animation) as u8),
+        if dark {
+            egui::Color32::from_rgba_unmultiplied(115, 205, 145, (255.0 * animation) as u8)
+        } else {
+            egui::Color32::from_rgba_unmultiplied(89, 80, 184, (255.0 * animation) as u8)
+        },
     );
     for (index, (axis, value)) in values.iter().enumerate() {
         let x = rect.left() + 8.0 + index as f32 * 96.0;
@@ -311,7 +396,11 @@ fn show_simulation_dro(ctx: &egui::Context, ui: &egui::Ui, app: &TekkCamApp, vie
             egui::Align2::LEFT_CENTER,
             format!("{axis} {value:>8.3}{}", units.label()),
             egui::FontId::monospace(10.5),
-            egui::Color32::from_rgba_unmultiplied(225, 232, 242, (255.0 * animation) as u8),
+            if dark {
+                egui::Color32::from_rgba_unmultiplied(225, 232, 242, (255.0 * animation) as u8)
+            } else {
+                egui::Color32::from_rgba_unmultiplied(45, 47, 64, (255.0 * animation) as u8)
+            },
         );
     }
 }
@@ -644,7 +733,7 @@ fn show_empty_workspace(ui: &mut egui::Ui, app: &mut TekkCamApp, rect: egui::Rec
                         .color(muted),
                     );
                     ui.add_space(18.0);
-                    if import_design_button(ui, dark).clicked() {
+                    if import_design_button(ui).clicked() {
                         app.request_open_dialog(ui.ctx());
                     }
                     ui.add_space(20.0);
@@ -676,18 +765,13 @@ fn show_empty_workspace(ui: &mut egui::Ui, app: &mut TekkCamApp, rect: egui::Rec
     });
 }
 
-fn import_design_button(ui: &mut egui::Ui, dark: bool) -> egui::Response {
+fn import_design_button(ui: &mut egui::Ui) -> egui::Response {
     let button_width = ui.available_width().min(160.0);
-    let fill = if dark {
-        crate::ui::palette::SWISS_PLUM
-    } else {
-        egui::Color32::from_rgb(63, 119, 224)
-    };
     let response = ui
         .add_sized(
             [button_width, 44.0],
             egui::Button::new("")
-                .fill(fill)
+                .fill(crate::ui::palette::SWISS_PLUM)
                 .corner_radius(egui::CornerRadius::same(9)),
         )
         .on_hover_text("Choose a design or 3D model to import");

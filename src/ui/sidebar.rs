@@ -7,6 +7,8 @@ const ICON_EYE: char = '\u{F06E}';
 const ICON_EYE_OFF: char = '\u{F070}';
 const ICON_CHECK: char = '\u{F00C}';
 const ICON_PENDING: char = '\u{F111}';
+const ICON_PLUS: char = '\u{F067}';
+const ACTION_BUTTON_SIZE: [f32; 2] = [32.0, 32.0];
 
 pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
     let panel_bg = if app.ui_state.theme == crate::app::AppTheme::Light {
@@ -50,11 +52,30 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
             section_header(ui, "LAYERS & TEXT", header_color);
             ui.add_space(4.0);
 
+            let action_fill = if dark {
+                crate::ui::palette::CHARCOAL_SURFACE
+            } else {
+                egui::Color32::from_rgb(210, 211, 219)
+            };
+            let action_text = if dark {
+                egui::Color32::WHITE
+            } else {
+                egui::Color32::from_rgb(72, 75, 106)
+            };
+            let action_button = |text: egui::RichText| {
+                egui::Button::new(text.color(action_text))
+                    .fill(action_fill)
+                    .stroke(egui::Stroke::NONE)
+                    .corner_radius(egui::CornerRadius::same(5))
+            };
+
             ui.horizontal(|ui| {
                 if ui
                     .add_sized(
-                        [28.0, 28.0],
-                        egui::Button::new(egui::RichText::new("tT").color(egui::Color32::WHITE)),
+                        ACTION_BUTTON_SIZE,
+                        action_button(
+                            egui::RichText::new("tT").font(egui::FontId::proportional(17.0)),
+                        ),
                     )
                     .on_hover_text("Text")
                     .clicked()
@@ -67,11 +88,9 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                 }
                 let pencil_button = ui
                     .add_sized(
-                        [28.0, 28.0],
-                        egui::Button::new(
-                            egui::RichText::new("✏")
-                                .font(egui::FontId::proportional(17.0))
-                                .color(egui::Color32::WHITE),
+                        ACTION_BUTTON_SIZE,
+                        action_button(
+                            egui::RichText::new("✏").font(egui::FontId::proportional(17.0)),
                         ),
                     )
                     .on_hover_text("Draw");
@@ -81,17 +100,19 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                 }
                 if ui
                     .add_sized(
-                        [28.0, 28.0],
-                        egui::Button::new(
-                            egui::RichText::new("+").color(egui::Color32::WHITE),
+                        ACTION_BUTTON_SIZE,
+                        action_button(
+                            egui::RichText::new(ICON_PLUS.to_string())
+                                .font(egui::FontId::new(
+                                    16.0,
+                                    egui::FontFamily::Name("sidebar_icons".into()),
+                                )),
                         ),
                     )
-                    .on_hover_text("Add layer")
+                    .on_hover_text("Add STEP file")
                     .clicked()
                 {
-                    app.project.layers.push(Layer::new_placeholder());
-                    app.invalidate_gcode_and_simulation();
-                    app.ui_state.project_dirty = true;
+                    app.request_step_open_dialog(ctx);
                 }
             });
             ui.add_space(4.0);
@@ -317,6 +338,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                         egui::vec2(ui.available_width(), 26.0),
                         egui::Layout::left_to_right(egui::Align::Center),
                         |ui| {
+                            ui.add_space(4.0);
                             let visibility_icon = if *visible { ICON_EYE } else { ICON_EYE_OFF };
                             let icon = egui::RichText::new(visibility_icon.to_string())
                                 .font(egui::FontId::new(
@@ -331,17 +353,21 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                             if visibility_response.clicked() {
                                 changed_model_visibility = Some((index, !*visible));
                             }
+                            ui.add_space(4.0);
                             show_model_context_menu(
                                 &visibility_response,
                                 index,
                                 &mut add_model_operation,
                                 &mut delete_model,
                             );
+                            let model_button_width = (ui.available_width() - 4.0).max(0.0);
                             let model_response = ui.add(
                                 egui::Button::new(label)
                                     .selected(*selected)
                                     .corner_radius(egui::CornerRadius::same(3))
-                                    .frame(false),
+                                    .frame(false)
+                                    .min_size(egui::vec2(model_button_width, 26.0))
+                                    .truncate(),
                             );
                             child_hit_rects.push(model_response.rect);
                             if model_response.clicked() {
@@ -667,7 +693,6 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                 });
             });
         });
-
     if app.ui_state.show_text_dialog {
         let mut open = app.ui_state.show_text_dialog;
         let editing_index = app.ui_state.editing_text_layer;
