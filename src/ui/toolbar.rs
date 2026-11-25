@@ -31,232 +31,247 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
     } else {
         egui::Color32::from_rgb(63, 64, 72)
     };
-    let menu_bar_response = egui::TopBottomPanel::top("menu_bar")
-        .exact_height(42.0)
-        .show_separator_line(false)
-        .frame(
-            egui::Frame::new()
-                .fill(panel_bg)
-                .stroke(egui::Stroke::new(1.0_f32, toolbar_border))
-                .inner_margin(egui::Margin::symmetric(8, 4)),
-        )
-        .show(ctx, |ui| {
-            ui.horizontal_centered(|ui| {
-                // ── Logo / brand ──────────────────────────────────────────
-                ui.add_space(4.0);
-                ui.label(
-                    egui::RichText::new("⚙ TekkCAM")
-                        .size(16.0)
-                        .color(accent)
-                        .strong(),
-                );
-                ui.separator();
-
-                // ── File menu ─────────────────────────────────────────────
-                ui.menu_button("File", |ui| {
-                    if ui.button("📁  Open Project…").clicked() {
-                        app.request_project_open_dialog(ctx);
-                        ui.close_menu();
-                    }
-                    if ui.button("📂  Open File…").clicked() {
-                        app.request_open_dialog(ctx);
-                        ui.close_menu();
-                    }
-                    if ui.button("💾  Save Project").clicked() {
-                        if app.project_path.is_some() {
-                            app.save_project();
-                        } else {
-                            app.request_project_save_dialog(ctx);
-                        }
-                        ui.close_menu();
-                    }
-                    if ui.button("💾  Save Project As…").clicked() {
-                        app.request_project_save_dialog(ctx);
-                        ui.close_menu();
-                    }
-                    ui.separator();
-                    if ui.button("📤  Export G-code…").clicked() {
-                        crate::ui::console::export_gcode(ctx, app);
-                        ui.close_menu();
-                    }
-                    ui.separator();
-                    if ui.button("✖  Quit").clicked() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
-                });
-
-                ui.menu_button("Edit", |ui| {
-                    if ui.button("↩  Undo").clicked() {
-                        app.undo_project();
-                        ui.close_menu();
-                    }
-                    if ui.button("↪  Redo").clicked() {
-                        app.redo_project();
-                        ui.close_menu();
-                    }
-                });
-
-                ui.menu_button("View", |ui| {
-                    if ui.button("🔲  Fit to Window").clicked() {
-                        app.ui_state.request_fit = true;
-                        ui.close_menu();
-                    }
-                    if ui.button("⊞  Toggle Grid").clicked() {
-                        app.ui_state.show_grid = !app.ui_state.show_grid;
-                        ui.close_menu();
-                    }
-                    ui.separator();
-                    ui.add_enabled_ui(app.ui_state.show_3d_view, |ui| {
-                        ui.checkbox(
-                            &mut app.ui_state.show_stock_removal,
-                            "Stock removal preview (sampled)",
-                        );
-                    });
-                });
-
-                ui.menu_button("Machine", |ui| {
-                    if ui.button("🔌  Connect…").clicked() {
-                        app.refresh_machine_ports();
-                        app.ui_state.show_machine_dialog = true;
-                        ui.close_menu();
-                    }
-                    if app.ui_state.machine_connected && ui.button("🎛  Controls / DRO").clicked()
-                    {
-                        app.ui_state.show_machine_controls = true;
-                        ui.close_menu();
-                    }
-                    if ui.button("▶  Run Job").clicked() {
-                        app.start_machine_job();
-                        ui.close_menu();
-                    }
-                    if ui.button("⏹  Stop").clicked() {
-                        if let Some(machine) = &app.machine {
-                            machine.stop();
-                        }
-                        app.ui_state.job_progress = None;
-                        ui.close_menu();
-                    }
-                    if ui.button("🏠  Home").clicked() {
-                        if let Some(machine) = &app.machine {
-                            machine.send_line("$H".into());
-                        }
-                        ui.close_menu();
-                    }
-                });
-
-                if ui.button("Settings").clicked() {
-                    app.ui_state.show_settings = true;
-                }
-
-                // ── Right-aligned status + connect button ─────────────────
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.spacing_mut().item_spacing.x = 4.0;
-                    // Machine connection badge
-                    let (badge_color, badge_text) = if app.ui_state.machine_connected {
-                        (success, "● Connected")
-                    } else {
-                        (DANGER, "● Disconnected")
-                    };
-
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                egui::RichText::new(badge_text)
-                                    .color(badge_color)
-                                    .size(12.0),
-                            )
-                            .frame(true),
-                        )
-                        .clicked()
-                    {
-                        if app.ui_state.machine_connected {
-                            app.ui_state.show_machine_controls = true;
-                        } else {
-                            app.refresh_machine_ports();
-                            app.ui_state.show_machine_dialog = true;
-                        }
-                    }
-
-                    if app.has_active_project() {
-                        if ui
-                            .add_sized(
-                                [28.0, 28.0],
-                                egui::Button::new(
-                                    egui::RichText::new(
-                                        if app.ui_state.show_right_sidebar {
-                                            ICON_LAYOUT_SIDEBAR_RIGHT
-                                        } else {
-                                            ICON_LAYOUT_SIDEBAR_RIGHT_OFF
-                                        }
-                                        .to_string(),
-                                    )
-                                    .size(18.0)
-                                    .font(egui::FontId::new(
-                                        18.0,
-                                        egui::FontFamily::Name("sidebar_icons".into()),
-                                    ))
-                                    .color(ui.visuals().text_color()),
-                                )
-                                .fill(egui::Color32::TRANSPARENT)
-                                .stroke(egui::Stroke::NONE),
-                            )
-                            .on_hover_text("Toggle right sidebar")
-                            .clicked()
-                        {
-                            app.ui_state.show_right_sidebar = !app.ui_state.show_right_sidebar;
-                        }
-
-                        if ui
-                            .add_sized(
-                                [28.0, 28.0],
-                                egui::Button::new(
-                                    egui::RichText::new(
-                                        if app.ui_state.show_left_sidebar {
-                                            ICON_LAYOUT_SIDEBAR_LEFT
-                                        } else {
-                                            ICON_LAYOUT_SIDEBAR_LEFT_OFF
-                                        }
-                                        .to_string(),
-                                    )
-                                    .size(18.0)
-                                    .font(egui::FontId::new(
-                                        18.0,
-                                        egui::FontFamily::Name("sidebar_icons".into()),
-                                    ))
-                                    .color(ui.visuals().text_color()),
-                                )
-                                .fill(egui::Color32::TRANSPARENT)
-                                .stroke(egui::Stroke::NONE),
-                            )
-                            .on_hover_text("Toggle layers and operations panel")
-                            .clicked()
-                        {
-                            app.ui_state.show_left_sidebar = !app.ui_state.show_left_sidebar;
-                        }
-                    }
-
-                    ui.label(
-                        egui::RichText::new(&app.ui_state.status_message)
-                            .size(11.0)
-                            .color(egui::Color32::from_rgb(140, 140, 160)),
-                    );
-                });
-            });
-        });
-
-    let mut tool_bar_rect = None;
-    if app.has_active_project() {
-        let tool_bar_response = egui::TopBottomPanel::top("tool_creation_toolbar")
-            .exact_height(36.0)
+    let menu_bar_response =
+        egui::TopBottomPanel::top("menu_bar")
+            .exact_height(42.0)
             .show_separator_line(false)
             .frame(
                 egui::Frame::new()
                     .fill(panel_bg)
-                    .stroke(egui::Stroke::new(1.0_f32, toolbar_border))
-                    .inner_margin(egui::Margin::symmetric(10, 3)),
+                    .inner_margin(egui::Margin::symmetric(10, 0)),
             )
             .show(ctx, |ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
                 ui.horizontal_centered(|ui| {
+                    ui.label(
+                        egui::RichText::new("⚙ TekkCAM")
+                            .size(16.0)
+                            .color(accent)
+                            .strong(),
+                    );
+                    ui.menu_button("File", |ui| {
+                        if ui.button("📁  Open Project…").clicked() {
+                            app.request_project_open_dialog(ctx);
+                            ui.close_menu();
+                        }
+                        if ui.button("📂  Open File…").clicked() {
+                            app.request_open_dialog(ctx);
+                            ui.close_menu();
+                        }
+                        if ui.button("💾  Save Project").clicked() {
+                            if app.project_path.is_some() {
+                                app.save_project();
+                            } else {
+                                app.request_project_save_dialog(ctx);
+                            }
+                            ui.close_menu();
+                        }
+                        if ui.button("💾  Save Project As…").clicked() {
+                            app.request_project_save_dialog(ctx);
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if ui.button("📤  Export G-code…").clicked() {
+                            crate::ui::console::export_gcode(ctx, app);
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if ui.button("✖  Quit").clicked() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                    });
+                    ui.menu_button("Edit", |ui| {
+                        if ui.button("↩  Undo").clicked() {
+                            app.undo_project();
+                            ui.close_menu();
+                        }
+                        if ui.button("↪  Redo").clicked() {
+                            app.redo_project();
+                            ui.close_menu();
+                        }
+                    });
+                    ui.menu_button("View", |ui| {
+                        if ui.button("🔲  Fit to Window").clicked() {
+                            app.ui_state.request_fit = true;
+                            ui.close_menu();
+                        }
+                        if ui.button("⊞  Toggle Grid").clicked() {
+                            app.ui_state.show_grid = !app.ui_state.show_grid;
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        ui.add_enabled_ui(app.ui_state.show_3d_view, |ui| {
+                            ui.checkbox(
+                                &mut app.ui_state.show_stock_removal,
+                                "Stock removal preview (sampled)",
+                            );
+                        });
+                    });
+                    ui.menu_button("Machine", |ui| {
+                        if ui.button("🔌  Connect…").clicked() {
+                            app.refresh_machine_ports();
+                            app.ui_state.show_machine_dialog = true;
+                            ui.close_menu();
+                        }
+                        if app.ui_state.machine_connected
+                            && ui.button("🎛  Controls / DRO").clicked()
+                        {
+                            app.ui_state.show_machine_controls = true;
+                            ui.close_menu();
+                        }
+                        if ui.button("▶  Run Job").clicked() {
+                            app.start_machine_job();
+                            ui.close_menu();
+                        }
+                        if ui.button("⏹  Stop").clicked() {
+                            if let Some(machine) = &app.machine {
+                                machine.stop();
+                            }
+                            app.ui_state.job_progress = None;
+                            ui.close_menu();
+                        }
+                        if ui.button("🏠  Home").clicked() {
+                            if let Some(machine) = &app.machine {
+                                machine.send_line("$H".into());
+                            }
+                            ui.close_menu();
+                        }
+                    });
+                    if ui.button("Settings").clicked() {
+                        app.ui_state.show_settings = true;
+                    }
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let (badge_color, badge_icon, badge_text) =
+                            if app.ui_state.machine_connected {
+                                (success, '\u{F00C}', "Connected")
+                            } else {
+                                (DANGER, '\u{F111}', "Disconnected")
+                            };
+                        let mut badge_label = egui::text::LayoutJob::default();
+                        badge_label.append(
+                            &badge_icon.to_string(),
+                            0.0,
+                            egui::TextFormat {
+                                font_id: egui::FontId::new(
+                                    12.0,
+                                    egui::FontFamily::Name("download_icon".into()),
+                                ),
+                                color: badge_color,
+                                valign: egui::Align::Center,
+                                ..Default::default()
+                            },
+                        );
+                        badge_label.append(
+                            &format!("   {badge_text}"),
+                            0.0,
+                            egui::TextFormat {
+                                font_id: egui::FontId::proportional(12.0),
+                                color: badge_color,
+                                valign: egui::Align::Center,
+                                ..Default::default()
+                            },
+                        );
+                        if ui.add(egui::Button::new(badge_label).frame(true)).clicked() {
+                            if app.ui_state.machine_connected {
+                                app.ui_state.show_machine_controls = true;
+                            } else {
+                                app.refresh_machine_ports();
+                                app.ui_state.show_machine_dialog = true;
+                            }
+                        }
+
+                        if app.has_active_project() {
+                            ui.scope(|ui| {
+                                ui.spacing_mut().item_spacing.x = 0.0;
+                                ui.horizontal(|ui| {
+                                    if ui
+                                        .add_sized(
+                                            [26.0, 28.0],
+                                            egui::Button::new(
+                                                egui::RichText::new(
+                                                    if app.ui_state.show_left_sidebar {
+                                                        ICON_LAYOUT_SIDEBAR_LEFT
+                                                    } else {
+                                                        ICON_LAYOUT_SIDEBAR_LEFT_OFF
+                                                    }
+                                                    .to_string(),
+                                                )
+                                                .font(egui::FontId::new(
+                                                    18.0,
+                                                    egui::FontFamily::Name("sidebar_icons".into()),
+                                                )),
+                                            )
+                                            .fill(egui::Color32::TRANSPARENT)
+                                            .stroke(egui::Stroke::NONE),
+                                        )
+                                        .on_hover_text("Toggle layers and operations panel")
+                                        .clicked()
+                                    {
+                                        app.ui_state.show_left_sidebar =
+                                            !app.ui_state.show_left_sidebar;
+                                    }
+                                    if ui
+                                        .add_sized(
+                                            [26.0, 28.0],
+                                            egui::Button::new(
+                                                egui::RichText::new(
+                                                    if app.ui_state.show_right_sidebar {
+                                                        ICON_LAYOUT_SIDEBAR_RIGHT
+                                                    } else {
+                                                        ICON_LAYOUT_SIDEBAR_RIGHT_OFF
+                                                    }
+                                                    .to_string(),
+                                                )
+                                                .font(egui::FontId::new(
+                                                    18.0,
+                                                    egui::FontFamily::Name("sidebar_icons".into()),
+                                                )),
+                                            )
+                                            .fill(egui::Color32::TRANSPARENT)
+                                            .stroke(egui::Stroke::NONE),
+                                        )
+                                        .on_hover_text("Toggle right sidebar")
+                                        .clicked()
+                                    {
+                                        app.ui_state.show_right_sidebar =
+                                            !app.ui_state.show_right_sidebar;
+                                    }
+                                });
+                            });
+                        }
+
+                        if ui.available_width() > 260.0 {
+                            ui.label(
+                                egui::RichText::new(&app.ui_state.status_message)
+                                    .size(11.0)
+                                    .color(egui::Color32::from_rgb(140, 140, 160)),
+                            );
+                        }
+                    });
+                });
+            });
+
+    let mut tool_bar_rect = None;
+    if app.has_active_project() {
+        let tool_bar_response = egui::TopBottomPanel::top("tool_creation_toolbar")
+            .exact_height(40.0)
+            .show_separator_line(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(panel_bg)
+                    .inner_margin(egui::Margin::symmetric(10, 0)),
+            )
+            .show(ctx, |ui| {
+                egui::ScrollArea::horizontal()
+                    .id_salt("toolbar_controls")
+                    .auto_shrink([false, false])
+                    .scroll_bar_visibility(
+                        egui::containers::scroll_area::ScrollBarVisibility::AlwaysHidden,
+                    )
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        ui.horizontal_centered(|ui| {
                     ui.menu_button(
                         egui::RichText::new(ICON_PLUS.to_string()).font(egui::FontId::new(
                             16.0,
@@ -531,7 +546,8 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                         app.ui_state.simulator.stop();
                         app.ui_state.status_message = "Simulation stopped".into();
                     }
-                });
+                        });
+                    });
             });
         tool_bar_rect = Some(tool_bar_response.response.rect);
     }
