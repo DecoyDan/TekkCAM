@@ -15,11 +15,11 @@ These links download the files directly from the latest GitHub release:
 
 | Platform | Installer | Portable executables |
 | --- | --- | --- |
-| Windows x64 | [Setup installer](https://github.com/Risbern21/TekkCAM/releases/latest/download/tekkcam-gui_0.1.8_x64-setup.exe) | [ZIP archive](https://github.com/Risbern21/TekkCAM/releases/latest/download/tekkcam-v0.1.8-windows-x86_64.zip) |
-| macOS Apple Silicon | [DMG installer](https://github.com/Risbern21/TekkCAM/releases/latest/download/TekkCAM_0.1.8_aarch64.dmg) | [Tarball](https://github.com/Risbern21/TekkCAM/releases/latest/download/tekkcam-v0.1.8-macos-aarch64.tar.gz) |
-| macOS Intel | [DMG installer](https://github.com/Risbern21/TekkCAM/releases/latest/download/TekkCAM_0.1.8_x64.dmg) | [Tarball](https://github.com/Risbern21/TekkCAM/releases/latest/download/tekkcam-v0.1.8-macos-x86_64.tar.gz) |
-| Debian or Ubuntu x64 | [DEB package](https://github.com/Risbern21/TekkCAM/releases/latest/download/tekkcam-gui_0.1.8_amd64.deb) | [Tarball](https://github.com/Risbern21/TekkCAM/releases/latest/download/tekkcam-v0.1.8-linux-x86_64.tar.gz) |
-| Other Linux x64 | [AppImage](https://github.com/Risbern21/TekkCAM/releases/latest/download/tekkcam-gui_0.1.8_x86_64.AppImage) | [Tarball](https://github.com/Risbern21/TekkCAM/releases/latest/download/tekkcam-v0.1.8-linux-x86_64.tar.gz) |
+| Windows x64 | [Setup installer](https://github.com/Risbern21/TekkCAM/releases/latest/download/tekkcam-gui_1.0.0_x64-setup.exe) | [ZIP archive](https://github.com/Risbern21/TekkCAM/releases/latest/download/tekkcam-v1.0.0-windows-x86_64.zip) |
+| macOS Apple Silicon | [DMG installer](https://github.com/Risbern21/TekkCAM/releases/latest/download/TekkCAM_1.0.0_aarch64.dmg) | [Tarball](https://github.com/Risbern21/TekkCAM/releases/latest/download/tekkcam-v1.0.0-macos-aarch64.tar.gz) |
+| macOS Intel | [DMG installer](https://github.com/Risbern21/TekkCAM/releases/latest/download/TekkCAM_1.0.0_x64.dmg) | [Tarball](https://github.com/Risbern21/TekkCAM/releases/latest/download/tekkcam-v1.0.0-macos-x86_64.tar.gz) |
+| Debian or Ubuntu x64 | [DEB package](https://github.com/Risbern21/TekkCAM/releases/latest/download/tekkcam-gui_1.0.0_amd64.deb) | [Tarball](https://github.com/Risbern21/TekkCAM/releases/latest/download/tekkcam-v1.0.0-linux-x86_64.tar.gz) |
+| Other Linux x64 | [AppImage](https://github.com/Risbern21/TekkCAM/releases/latest/download/tekkcam-gui_1.0.0_x86_64.AppImage) | [Tarball](https://github.com/Risbern21/TekkCAM/releases/latest/download/tekkcam-v1.0.0-linux-x86_64.tar.gz) |
 
 The portable archives contain both the desktop app and CLI. Installers also include both. See the [full installation guide](INSTALLATION.md) for Linux serial-port permissions and local packaging details. [Browse all releases](https://github.com/Risbern21/TekkCAM/releases) if you need an older version.
 
