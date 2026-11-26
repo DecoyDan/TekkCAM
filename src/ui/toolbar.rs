@@ -40,6 +40,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                 .inner_margin(egui::Margin::symmetric(10, 0)),
         )
         .show(ctx, |ui| {
+            apply_light_button_bg(ui, app.ui_state.theme);
             ui.spacing_mut().item_spacing.x = 10.0;
             ui.horizontal_centered(|ui| {
                 ui.label(
@@ -240,6 +241,30 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                         }
 
                         ui.spacing_mut().item_spacing.x = prev_spacing;
+
+                        let dark = app.ui_state.theme == crate::app::AppTheme::Dark;
+                        crate::ui::icon_pill_toggle_compact(
+                            ui,
+                            dark,
+                            &mut app.ui_state.properties_advanced,
+                            &[
+                                (false, '\u{F0E66}', "Beginner mode"),
+                                (true, '\u{F1DE}', "Advanced mode"),
+                            ],
+                        );
+                        ui.label(
+                            egui::RichText::new(if app.ui_state.properties_advanced {
+                                "Advanced"
+                            } else {
+                                "Beginner"
+                            })
+                            .size(12.0)
+                            .color(if dark {
+                                egui::Color32::from_rgb(160, 162, 178)
+                            } else {
+                                egui::Color32::from_rgb(90, 93, 118)
+                            }),
+                        );
                     }
 
                     if ui.available_width() > 260.0 {
@@ -264,6 +289,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                     .inner_margin(egui::Margin::symmetric(10, 0)),
             )
             .show(ctx, |ui| {
+                apply_light_button_bg(ui, app.ui_state.theme);
                 egui::ScrollArea::horizontal()
                     .id_salt("toolbar_controls")
                     .auto_shrink([false, false])
@@ -455,11 +481,18 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                             app.ui_state.status_message = "Face selection finished".into();
                         }
                     }
+                    ui.separator();
                     let (rect, response) =
                         ui.allocate_exact_size(egui::vec2(30.0, 26.0), egui::Sense::click());
-                    if response.hovered() || response.is_pointer_button_down_on() {
-                        ui.painter()
-                            .rect_filled(rect, 4.0, ui.visuals().widgets.hovered.bg_fill);
+                    let new_tool_bg = if response.hovered() || response.is_pointer_button_down_on() {
+                        Some(ui.visuals().widgets.hovered.bg_fill)
+                    } else if app.ui_state.theme == crate::app::AppTheme::Light {
+                        Some(egui::Color32::from_rgb(210, 211, 219))
+                    } else {
+                        None
+                    };
+                    if let Some(bg) = new_tool_bg {
+                        ui.painter().rect_filled(rect, 6.0, bg);
                     }
                     let center = rect.center();
                     let stroke = egui::Stroke::new(1.8_f32, ui.visuals().text_color());
@@ -487,7 +520,8 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                         stroke,
                     );
                     let badge = egui::pos2(rect.right() - 6.0, rect.top() + 6.0);
-                    ui.painter().circle_filled(badge, 5.0, panel_bg);
+                    ui.painter()
+                        .circle_filled(badge, 5.0, new_tool_bg.unwrap_or(panel_bg));
                     ui.painter()
                         .circle_stroke(badge, 4.5, egui::Stroke::new(1.2_f32, accent));
                     ui.painter().line_segment(
@@ -576,5 +610,13 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
         // No toolbar — just draw the bottom of the menu bar
         let y = menu_rect.bottom().floor();
         border_painter.hline(menu_rect.x_range(), y - 0.5, border);
+    }
+}
+
+fn apply_light_button_bg(ui: &mut egui::Ui, theme: crate::app::AppTheme) {
+    if theme == crate::app::AppTheme::Light {
+        let button_bg = egui::Color32::from_rgb(210, 211, 219);
+        ui.visuals_mut().widgets.inactive.weak_bg_fill = button_bg;
+        ui.visuals_mut().widgets.inactive.bg_fill = button_bg;
     }
 }

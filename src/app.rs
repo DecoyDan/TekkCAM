@@ -137,6 +137,8 @@ pub struct TekkCamApp {
     plan_progress_rx: Receiver<String>,
     plan_cancel: Arc<std::sync::atomic::AtomicBool>,
     pub plan_pending: bool,
+    /// ID of the Loading toast shown while auto-plan is running (0 = none).
+    plan_toast_id: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -156,7 +158,7 @@ impl Default for AppPreferences {
     fn default() -> Self {
         Self {
             display_units: DisplayUnits::Millimeters,
-            theme: AppTheme::Dark,
+            theme: AppTheme::Light,
             font_size: FontSizeOption::Medium,
             render_material: crate::renderer::pipeline::StockMaterial::Aluminum,
             selected_machine_port: None,
@@ -168,8 +170,8 @@ impl Default for AppPreferences {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AppTheme {
-    Light,
     #[default]
+    Light,
     Dark,
 }
 
@@ -368,6 +370,9 @@ impl ProjectHistory {
 pub struct UiState {
     pub selected_layer: Option<usize>,
     pub selected_model: Option<usize>,
+    pub renaming_model: Option<usize>,
+    pub rename_model_buffer: String,
+    pub rename_model_request_focus: bool,
     pub selected_operation: Option<usize>,
     pub face_selection_mode: bool,
     pub tool_editor: Option<crate::cam::tool::Tool>,
@@ -408,6 +413,8 @@ pub struct UiState {
     pub text_resize: Option<TextResizeState>,
     pub text_rotate: Option<TextRotateState>,
     pub console_log: Vec<String>,
+    pub generation_toasts: Vec<GenerationToast>,
+    pub toast_id_counter: u64,
     pub status_message: String,
     pub machine_connected: bool,
     pub show_grid: bool,
@@ -448,6 +455,23 @@ pub struct UiState {
     pub job_progress: Option<(usize, usize)>,
     dialog_receiver: Option<Receiver<DialogResult>>,
     dialog_pending: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ToastKind {
+    Error,
+    Success,
+    /// Loading toasts stay until explicitly replaced/removed (no auto-expire).
+    Loading,
+}
+
+#[derive(Clone, Debug)]
+pub struct GenerationToast {
+    pub kind: ToastKind,
+    pub message: String,
+    pub created_at: std::time::Instant,
+    /// Stable key so a Loading toast can be found and swapped out.
+    pub id: u64,
 }
 
 #[derive(Clone)]
@@ -495,6 +519,9 @@ impl Default for UiState {
         Self {
             selected_layer: None,
             selected_model: None,
+            renaming_model: None,
+            rename_model_buffer: String::new(),
+            rename_model_request_focus: false,
             selected_operation: None,
             face_selection_mode: false,
             tool_editor: None,
@@ -532,6 +559,8 @@ impl Default for UiState {
             text_resize: None,
             text_rotate: None,
             console_log: Vec::new(),
+            generation_toasts: Vec::new(),
+            toast_id_counter: 0,
             status_message: "Ready".into(),
             machine_connected: false,
             show_grid: true,
@@ -544,7 +573,7 @@ impl Default for UiState {
             properties_advanced: false,
             model_orbit: [0.0, 0.0],
             display_units: DisplayUnits::default(),
-            theme: AppTheme::Dark,
+            theme: AppTheme::Light,
             font_size: FontSizeOption::Medium,
             project_dirty: false,
             request_fit: false,
@@ -664,6 +693,7 @@ impl TekkCamApp {
             plan_progress_rx,
             plan_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             plan_pending: false,
+            plan_toast_id: 0,
         };
         app.project.tools = load_tool_database();
         app.project_history.reset(&app.project);
@@ -742,6 +772,7 @@ impl TekkCamApp {
         self.scene_sig.clear();
         self.ui_state.selected_layer = None;
         self.ui_state.selected_model = None;
+        self.ui_state.renaming_model = None;
         self.ui_state.selected_operation = None;
         self.ui_state.project_dirty = false;
         self.ui_state.request_fit = true;
@@ -1186,9 +1217,9 @@ impl TekkCamApp {
             );
         }
         if !setup_issues.is_empty() {
-            let message = format!("✖ Setup validation failed: {}", setup_issues.join("; "));
-            self.ui_state.console_log.push(message.clone());
-            self.ui_state.status_message = message;
+            let reason = format!("Setup validation failed: {}", setup_issues.join("; "));
+            self.push_generation_error(&reason);
+            self.ui_state.status_message = format!("✖ {reason}");
             return;
         }
         let mut operation = operation;
@@ -1233,7 +1264,7 @@ impl TekkCamApp {
             } else {
                 "3D machining requires a visible STEP model"
             };
-            self.ui_state.console_log.push(format!("✖ {message}"));
+            self.push_generation_error(message);
             self.ui_state.status_message = "No visible STEP model".into();
             return;
         }
@@ -1252,9 +1283,7 @@ impl TekkCamApp {
         let surface_layer = source_layer.is_some_and(|layer| uses_stock_surface(&layer.kind));
         let geometry = source_layer.map(|layer| layer.geometry.clone());
         if !model_required && !bores_from_features && geometry.is_none() {
-            self.ui_state
-                .console_log
-                .push("✖ No visible geometry to machine".into());
+            self.push_generation_error("No visible geometry to machine");
             return;
         }
         let setup = self.project.setup.clone();
@@ -1262,9 +1291,8 @@ impl TekkCamApp {
             match self.project.surface_map.clone() {
                 Some(map) => Some(map),
                 None => {
-                    self.ui_state.console_log.push(
-                        "✖ Surface compensation is enabled but no complete surface map is saved"
-                            .into(),
+                    self.push_generation_error(
+                        "Surface compensation is enabled but no complete surface map is saved",
                     );
                     self.generation_pending = false;
                     return;
@@ -1384,8 +1412,8 @@ impl TekkCamApp {
             .and_then(|i| self.project.models.get(i))
             .cloned()
         else {
-            self.ui_state.console_log.push(
-                "✖ Auto plan needs a visible STEP model that has been fitted to its stock".into(),
+            self.push_generation_error(
+                "Auto plan needs a visible STEP model that has been fitted to its stock",
             );
             self.ui_state.status_message = "No visible STEP model".into();
             return;
@@ -1408,6 +1436,8 @@ impl TekkCamApp {
         };
         self.plan_pending = true;
         self.ui_state.status_message = format!("Planning operations for '{}'…", model.name);
+        self.plan_toast_id =
+            self.push_loading_toast(format!("Auto plan running for '{}'…", model.name));
         std::thread::spawn(move || {
             // Lets the generators report progress and stop when cancelled.
             let _control = crate::cam::cancel::install(control);
@@ -1466,14 +1496,29 @@ impl TekkCamApp {
                     .console_log
                     .push(format!("✔ Auto plan added {count} operation(s){replaced}"));
                 self.ui_state.status_message = format!("Planned {count} operation(s)");
+                let tid = self.plan_toast_id;
+                self.resolve_loading_toast(
+                    tid,
+                    ToastKind::Success,
+                    format!("Auto plan complete — {count} operation(s) added{replaced}"),
+                );
             }
             Err(error) if crate::cam::cancel::was_cancelled(&error) => {
                 self.ui_state
                     .console_log
                     .push("Auto plan cancelled; existing operations were not changed.".into());
                 self.ui_state.status_message = "Auto plan cancelled".into();
+                // Remove the loading toast silently on cancel.
+                let tid = self.plan_toast_id;
+                self.ui_state.generation_toasts.retain(|t| t.id != tid);
             }
             Err(error) => {
+                let tid = self.plan_toast_id;
+                self.resolve_loading_toast(
+                    tid,
+                    ToastKind::Error,
+                    format!("Auto plan failed: {error}"),
+                );
                 self.ui_state
                     .console_log
                     .push(format!("✖ Auto plan failed: {error}"));
@@ -1512,11 +1557,13 @@ impl TekkCamApp {
                     }
                 }
                 self.ui_state.status_message = format!("Generated {count} moves");
+                self.push_generation_success(format!(
+                    "Generated {count} {label} moves for '{}'",
+                    result.name
+                ));
             }
             Err(error) => {
-                self.ui_state
-                    .console_log
-                    .push(format!("✖ Toolpath generation failed: {error}"));
+                self.push_generation_error(format!("Toolpath generation failed: {error}"));
                 self.ui_state.status_message = "Toolpath generation failed".into();
             }
         }
@@ -1538,12 +1585,73 @@ impl TekkCamApp {
                     .console_log
                     .push("✔ G-code generated from toolpaths".into());
                 self.ui_state.status_message = "G-code ready".into();
+                self.push_generation_success("G-code generated from toolpaths");
             }
-            Err(error) => self
-                .ui_state
-                .console_log
-                .push(format!("✖ G-code generation failed: {error}")),
+            Err(error) => self.push_generation_error(format!("G-code generation failed: {error}")),
         }
+    }
+
+    /// Log a generation error to the console tab and queue a timed viewport popup.
+    pub(crate) fn push_generation_error(&mut self, message: impl Into<String>) {
+        let message = message.into();
+        self.ui_state.console_log.push(format!("✖ {message}"));
+        let id = self.next_toast_id();
+        self.ui_state.generation_toasts.push(GenerationToast {
+            kind: ToastKind::Error,
+            message,
+            created_at: std::time::Instant::now(),
+            id,
+        });
+    }
+
+    /// Queue a timed success toast (also logged to the console).
+    pub(crate) fn push_generation_success(&mut self, message: impl Into<String>) {
+        let message = message.into();
+        self.ui_state.console_log.push(format!("✔ {message}"));
+        let id = self.next_toast_id();
+        self.ui_state.generation_toasts.push(GenerationToast {
+            kind: ToastKind::Success,
+            message,
+            created_at: std::time::Instant::now(),
+            id,
+        });
+    }
+
+    /// Push a persistent loading toast and return its id so it can be resolved later.
+    pub(crate) fn push_loading_toast(&mut self, message: impl Into<String>) -> u64 {
+        let id = self.next_toast_id();
+        self.ui_state.generation_toasts.push(GenerationToast {
+            kind: ToastKind::Loading,
+            message: message.into(),
+            created_at: std::time::Instant::now(),
+            id,
+        });
+        id
+    }
+
+    /// Replace a Loading toast (by id) with a Success or Error toast.
+    pub(crate) fn resolve_loading_toast(
+        &mut self,
+        id: u64,
+        kind: ToastKind,
+        message: impl Into<String>,
+    ) {
+        let message = message.into();
+        if let Some(toast) = self
+            .ui_state
+            .generation_toasts
+            .iter_mut()
+            .find(|t| t.id == id)
+        {
+            toast.kind = kind;
+            toast.message = message;
+            toast.created_at = std::time::Instant::now();
+        }
+    }
+
+    fn next_toast_id(&mut self) -> u64 {
+        self.ui_state.toast_id_counter += 1;
+        self.ui_state.toast_id_counter
     }
 
     pub fn request_open_dialog(&mut self, ctx: &egui::Context) {

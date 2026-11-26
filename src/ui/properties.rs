@@ -95,30 +95,6 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                 return;
             }
 
-            // Beginner / Advanced mode pill toggle
-            ui.horizontal(|ui| {
-                crate::ui::icon_pill_toggle(
-                    ui,
-                    dark,
-                    &mut app.ui_state.properties_advanced,
-                    &[
-                        (false, '\u{F0E66}', "Beginner mode"),
-                        (true, '\u{F1DE}', "Advanced mode"),
-                    ],
-                );
-                ui.add_space(4.0);
-                ui.label(
-                    egui::RichText::new(if app.ui_state.properties_advanced {
-                        "Advanced"
-                    } else {
-                        "Beginner"
-                    })
-                    .size(12.0)
-                    .color(MUTED),
-                );
-            });
-            ui.add_space(6.0);
-
             let advanced = app.ui_state.properties_advanced;
 
             if !app.has_properties_content() {
@@ -694,13 +670,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                                 let btn = egui::Button::new(
                                     egui::RichText::new(button_text).color(egui::Color32::WHITE),
                                 )
-                                .fill(
-                                    if app.ui_state.theme == crate::app::AppTheme::Dark {
-                                        crate::ui::palette::SWISS_PLUM
-                                    } else {
-                                        egui::Color32::from_rgb(50, 100, 200)
-                                    },
-                                );
+                                .fill(crate::ui::palette::SWISS_PLUM);
 
                                 if ui
                                     .add_enabled_ui(!app.generation_pending, |ui| {

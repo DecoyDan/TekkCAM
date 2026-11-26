@@ -339,10 +339,13 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                     .collect();
                 let mut changed_model_visibility = None;
                 let mut select_model = None;
+                let mut start_rename_model = None;
+                let mut finish_rename: Option<Option<String>> = None;
                 let mut delete_model = None;
                 let mut add_model_operation: Option<(usize, crate::cam::operations::Operation)> =
                     None;
                 for (index, (selected, visible, label)) in model_display.iter().enumerate() {
+                    let is_renaming = app.ui_state.renaming_model == Some(index);
                     let row_bg = if *selected {
                         selected_bg
                     } else {
@@ -356,7 +359,7 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                         egui::Color32::from_rgb(196, 198, 210)
                     };
 
-                    let mut child_hit_rects = Vec::with_capacity(2);
+                    let mut eye_rect = egui::Rect::NOTHING;
                     let row = egui::Frame::new()
                         .fill(row_bg)
                         .stroke(egui::Stroke::new(
@@ -379,51 +382,90 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                                 let visibility_response = ui
                                     .add_sized([22.0, 20.0], egui::Button::new(icon).frame(false))
                                     .on_hover_text(if *visible { "Hide model" } else { "Show model" });
-                                child_hit_rects.push(visibility_response.rect);
+                                eye_rect = visibility_response.rect;
                                 if visibility_response.clicked() {
                                     changed_model_visibility = Some((index, !*visible));
                                 }
-                                show_model_context_menu(
-                                    &visibility_response,
-                                    index,
-                                    &mut add_model_operation,
-                                    &mut delete_model,
-                                );
                                 let model_button_width = ui.available_width().max(0.0);
-                                let model_response = ui.add(
-                                    egui::Button::new(
-                                        egui::RichText::new(label).size(13.0).color(row_text),
-                                    )
-                                    .corner_radius(egui::CornerRadius::same(3))
-                                    .frame(false)
-                                    .min_size(egui::vec2(model_button_width, 20.0))
-                                    .truncate(),
-                                );
-                                child_hit_rects.push(model_response.rect);
-                                if model_response.clicked() {
-                                    select_model = Some(index);
+                                if is_renaming {
+                                    let text_response = ui.add_sized(
+                                        [model_button_width, 20.0],
+                                        egui::TextEdit::singleline(
+                                            &mut app.ui_state.rename_model_buffer,
+                                        ),
+                                    );
+                                    if app.ui_state.rename_model_request_focus {
+                                        text_response.request_focus();
+                                        app.ui_state.rename_model_request_focus = false;
+                                    }
+                                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                        finish_rename = Some(None);
+                                    } else if text_response.lost_focus() {
+                                        finish_rename =
+                                            Some(Some(app.ui_state.rename_model_buffer.clone()));
+                                    }
+                                } else {
+                                    ui.allocate_ui_with_layout(
+                                        egui::vec2(model_button_width, 20.0),
+                                        egui::Layout::left_to_right(egui::Align::Center),
+                                        |ui| {
+                                            ui.add(
+                                                egui::Label::new(
+                                                    egui::RichText::new(label)
+                                                        .size(13.0)
+                                                        .color(row_text),
+                                                )
+                                                .truncate(),
+                                            );
+                                        },
+                                    );
                                 }
-                                show_model_context_menu(
-                                    &model_response,
-                                    index,
-                                    &mut add_model_operation,
-                                    &mut delete_model,
-                                );
                             });
                         });
-                    let response = row.response.interact(egui::Sense::click());
-                    let pointer_over_child = ctx
-                        .input(|input| input.pointer.interact_pos())
-                        .is_some_and(|position| {
-                            child_hit_rects.iter().any(|rect| rect.contains(position))
-                        });
-                    if !pointer_over_child {
+                    if !is_renaming {
+                        // The row-wide click area sits above the eye, so tell the two apart
+                        // by where the pointer was.
+                        let response = row.response.interact(egui::Sense::click());
+                        if response.clicked() {
+                            let on_eye = response
+                                .interact_pointer_pos()
+                                .is_some_and(|pointer| eye_rect.expand(2.0).contains(pointer));
+                            if on_eye {
+                                changed_model_visibility = Some((index, !*visible));
+                            } else {
+                                select_model = Some(index);
+                            }
+                        }
                         show_model_context_menu(
                             &response,
                             index,
                             &mut add_model_operation,
+                            &mut start_rename_model,
                             &mut delete_model,
                         );
+                    }
+                }
+                if let Some(outcome) = finish_rename {
+                    if let (Some(index), Some(new_name)) = (app.ui_state.renaming_model, outcome) {
+                        let trimmed = new_name.trim();
+                        if !trimmed.is_empty() {
+                            if let Some(model) = app.project.models.get_mut(index) {
+                                if model.name != trimmed {
+                                    model.name = trimmed.to_owned();
+                                    app.ui_state.project_dirty = true;
+                                    app.scene_sig.clear();
+                                }
+                            }
+                        }
+                    }
+                    app.ui_state.renaming_model = None;
+                }
+                if let Some(index) = start_rename_model {
+                    if let Some(model) = app.project.models.get(index) {
+                        app.ui_state.selected_model = Some(index);
+                        app.ui_state.renaming_model = Some(index);
+                        app.ui_state.rename_model_buffer = model.name.clone();
+                        app.ui_state.rename_model_request_focus = true;
                     }
                 }
                 if let Some((index, operation)) = add_model_operation {
@@ -456,6 +498,11 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                             .then_some(index.min(app.project.models.len().saturating_sub(1))),
                         Some(selected) if selected > index => Some(selected - 1),
                         selected => selected,
+                    };
+                    app.ui_state.renaming_model = match app.ui_state.renaming_model {
+                        Some(renaming) if renaming == index => None,
+                        Some(renaming) if renaming > index => Some(renaming - 1),
+                        renaming => renaming,
                     };
                     app.ui_state.project_dirty = true;
                     app.ui_state.request_fit = true;
@@ -1073,6 +1120,7 @@ fn show_model_context_menu(
     response: &egui::Response,
     index: usize,
     add_model_operation: &mut Option<(usize, crate::cam::operations::Operation)>,
+    rename_model: &mut Option<usize>,
     delete_model: &mut Option<usize>,
 ) {
     response.context_menu(|ui| {
@@ -1106,6 +1154,10 @@ fn show_model_context_menu(
             }
         });
         ui.separator();
+        if ui.button("Rename model").clicked() {
+            *rename_model = Some(index);
+            ui.close_menu();
+        }
         if ui.button("Delete model").clicked() {
             *delete_model = Some(index);
             ui.close_menu();

@@ -123,7 +123,164 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
             if !app.ui_state.simulation_moves.is_empty() {
                 show_simulation_controls(ctx, app);
             }
+            show_generation_toasts(ctx, app, rect);
         });
+}
+
+fn show_generation_toasts(ctx: &egui::Context, app: &mut TekkCamApp, viewport: egui::Rect) {
+    const TOAST_DURATION_SECS: f32 = 5.0;
+    const SLIDE_IN_SECS: f32 = 0.25;
+    const FADE_OUT_SECS: f32 = 0.35;
+
+    let now = std::time::Instant::now();
+    // Loading toasts never expire; error/success toasts expire after TOAST_DURATION_SECS.
+    app.ui_state.generation_toasts.retain(|toast| {
+        toast.kind == crate::app::ToastKind::Loading
+            || now.duration_since(toast.created_at).as_secs_f32() < TOAST_DURATION_SECS
+    });
+    if app.ui_state.generation_toasts.is_empty() {
+        return;
+    }
+
+    let dark = app.ui_state.theme == crate::app::AppTheme::Dark;
+    let screen_bottom = ctx.screen_rect().bottom();
+    let target_bottom = viewport.bottom()
+        - if app.ui_state.simulation_moves.is_empty() {
+            16.0
+        } else {
+            98.0
+        };
+    let max_width = (viewport.width() - 32.0).clamp(240.0, 520.0);
+
+    let mut any_animating = false;
+    let mut dismissed_index = None;
+    let mut current_bottom = target_bottom;
+
+    for (index, toast) in app.ui_state.generation_toasts.iter().enumerate().rev() {
+        let elapsed = now.duration_since(toast.created_at).as_secs_f32();
+        let slide_t = (elapsed / SLIDE_IN_SECS).clamp(0.0, 1.0);
+        if slide_t < 1.0 {
+            any_animating = true;
+        }
+        let ease = 1.0 - (1.0 - slide_t).powi(3);
+        let start_bottom = screen_bottom + 40.0;
+        let y = start_bottom + (current_bottom - start_bottom) * ease;
+
+        let alpha = if toast.kind == crate::app::ToastKind::Loading {
+            // Loading toasts don't fade out automatically.
+            1.0
+        } else if elapsed > TOAST_DURATION_SECS - FADE_OUT_SECS {
+            any_animating = true;
+            ((TOAST_DURATION_SECS - elapsed) / FADE_OUT_SECS).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+
+        // Colour scheme per kind.
+        let (bg, border, text_color, icon) = match toast.kind {
+            crate::app::ToastKind::Error => {
+                let bg = if dark {
+                    egui::Color32::from_rgb(44, 24, 28)
+                } else {
+                    egui::Color32::from_rgb(254, 242, 242)
+                };
+                let border = egui::Color32::from_rgb(220, 70, 70);
+                let text = if dark {
+                    egui::Color32::from_rgb(248, 232, 234)
+                } else {
+                    egui::Color32::from_rgb(127, 29, 29)
+                };
+                (bg, border, text, "✖")
+            }
+            crate::app::ToastKind::Success => {
+                let bg = if dark {
+                    egui::Color32::from_rgb(20, 40, 28)
+                } else {
+                    egui::Color32::from_rgb(240, 253, 244)
+                };
+                let border = egui::Color32::from_rgb(34, 160, 80);
+                let text = if dark {
+                    egui::Color32::from_rgb(220, 252, 231)
+                } else {
+                    egui::Color32::from_rgb(20, 83, 45)
+                };
+                (bg, border, text, "✔")
+            }
+            crate::app::ToastKind::Loading => {
+                let bg = if dark {
+                    egui::Color32::from_rgb(22, 32, 50)
+                } else {
+                    egui::Color32::from_rgb(239, 246, 255)
+                };
+                let border = egui::Color32::from_rgb(59, 130, 246);
+                let text = if dark {
+                    egui::Color32::from_rgb(214, 234, 255)
+                } else {
+                    egui::Color32::from_rgb(29, 78, 160)
+                };
+                // Animate a simple ASCII spinner using the wall-clock time.
+                let spinner_frames = ["|", "/", "-", "\\"];
+                let frame_idx = (ctx.input(|i| i.time) * 6.0) as usize % spinner_frames.len();
+                any_animating = true;
+                (bg, border, text, spinner_frames[frame_idx])
+            }
+        };
+
+        let bg = bg.gamma_multiply(alpha);
+        let border = border.gamma_multiply(alpha);
+        let text_color = text_color.gamma_multiply(alpha);
+
+        let area_response = egui::Area::new(egui::Id::new(("generation_toast", index)))
+            .order(egui::Order::Foreground)
+            .pivot(egui::Align2::CENTER_BOTTOM)
+            .fixed_pos(egui::pos2(viewport.center().x, y))
+            .show(ctx, |ui| {
+                ui.set_max_width(max_width);
+                egui::Frame::new()
+                    .fill(bg)
+                    .stroke(egui::Stroke::new(1.0_f32, border))
+                    .corner_radius(egui::CornerRadius::same(8))
+                    .inner_margin(egui::Margin::symmetric(12, 8))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(icon).color(border).size(13.0).strong());
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(&toast.message)
+                                        .color(text_color)
+                                        .size(12.5),
+                                )
+                                .wrap(),
+                            );
+                            // All toast kinds use × to dismiss.
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new("×").color(text_color).size(14.0),
+                                    )
+                                    .frame(false),
+                                )
+                                .on_hover_text("Dismiss")
+                                .clicked()
+                            {
+                                dismissed_index = Some(index);
+                            }
+                        });
+                    });
+            });
+        current_bottom -= area_response.response.rect.height() + 8.0;
+    }
+
+    if let Some(index) = dismissed_index {
+        app.ui_state.generation_toasts.remove(index);
+    }
+    if !app.ui_state.generation_toasts.is_empty() {
+        if any_animating {
+            ctx.request_repaint();
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        }
+    }
 }
 
 fn show_simulation_controls(ctx: &egui::Context, app: &mut TekkCamApp) {
@@ -347,7 +504,7 @@ fn show_simulation_dro(ctx: &egui::Context, ui: &egui::Ui, app: &TekkCamApp, vie
             viewport.left() + 8.0,
             viewport.top() + 30.0 - (1.0 - animation) * 58.0,
         ),
-        egui::vec2(300.0, 44.0),
+        egui::vec2(300.0, 40.0),
     );
     let painter = ui.painter_at(viewport);
     painter.rect_filled(
@@ -405,115 +562,137 @@ fn show_simulation_dro(ctx: &egui::Context, ui: &egui::Ui, app: &TekkCamApp, vie
     }
 }
 
+struct ViewCubeFace {
+    label: &'static str,
+    normal: [f32; 3],
+    vertices: [[f32; 3]; 4],
+    dark_color: egui::Color32,
+    light_color: egui::Color32,
+}
+
+fn view_cube_faces() -> [ViewCubeFace; 6] {
+    [
+        ViewCubeFace {
+            label: "Top",
+            normal: [0.0, 0.0, 1.0],
+            vertices: [
+                [-1.0, -1.0, 1.0],
+                [1.0, -1.0, 1.0],
+                [1.0, 1.0, 1.0],
+                [-1.0, 1.0, 1.0],
+            ],
+            dark_color: egui::Color32::from_rgb(62, 62, 68),
+            light_color: egui::Color32::from_rgb(238, 240, 248),
+        },
+        ViewCubeFace {
+            label: "Bottom",
+            normal: [0.0, 0.0, -1.0],
+            vertices: [
+                [-1.0, 1.0, -1.0],
+                [1.0, 1.0, -1.0],
+                [1.0, -1.0, -1.0],
+                [-1.0, -1.0, -1.0],
+            ],
+            dark_color: egui::Color32::from_rgb(45, 45, 50),
+            light_color: egui::Color32::from_rgb(186, 189, 206),
+        },
+        ViewCubeFace {
+            label: "Front",
+            normal: [0.0, -1.0, 0.0],
+            vertices: [
+                [-1.0, -1.0, -1.0],
+                [1.0, -1.0, -1.0],
+                [1.0, -1.0, 1.0],
+                [-1.0, -1.0, 1.0],
+            ],
+            dark_color: egui::Color32::from_rgb(78, 78, 84),
+            light_color: egui::Color32::from_rgb(224, 226, 238),
+        },
+        ViewCubeFace {
+            label: "Back",
+            normal: [0.0, 1.0, 0.0],
+            vertices: [
+                [1.0, 1.0, -1.0],
+                [-1.0, 1.0, -1.0],
+                [-1.0, 1.0, 1.0],
+                [1.0, 1.0, 1.0],
+            ],
+            dark_color: egui::Color32::from_rgb(57, 57, 63),
+            light_color: egui::Color32::from_rgb(200, 203, 218),
+        },
+        ViewCubeFace {
+            label: "Right",
+            normal: [1.0, 0.0, 0.0],
+            vertices: [
+                [1.0, -1.0, -1.0],
+                [1.0, 1.0, -1.0],
+                [1.0, 1.0, 1.0],
+                [1.0, -1.0, 1.0],
+            ],
+            dark_color: egui::Color32::from_rgb(86, 86, 92),
+            light_color: egui::Color32::from_rgb(230, 232, 242),
+        },
+        ViewCubeFace {
+            label: "Left",
+            normal: [-1.0, 0.0, 0.0],
+            vertices: [
+                [-1.0, 1.0, -1.0],
+                [-1.0, -1.0, -1.0],
+                [-1.0, -1.0, 1.0],
+                [-1.0, 1.0, 1.0],
+            ],
+            dark_color: egui::Color32::from_rgb(68, 68, 74),
+            light_color: egui::Color32::from_rgb(212, 214, 228),
+        },
+    ]
+}
+
+fn view_cube_orbit(label: &str) -> [f32; 2] {
+    let flat_pitch = -35.264_f32.to_radians();
+    match label {
+        "Top" => [0.0, 0.905],
+        "Bottom" => [0.0, -2.135],
+        "Front" => [-std::f32::consts::FRAC_PI_4, flat_pitch],
+        "Right" => [-3.0 * std::f32::consts::FRAC_PI_4, flat_pitch],
+        "Back" => [3.0 * std::f32::consts::FRAC_PI_4, flat_pitch],
+        "Left" => [std::f32::consts::FRAC_PI_4, flat_pitch],
+        _ => [0.0, 0.0],
+    }
+}
+
 fn show_view_cube(ui: &mut egui::Ui, app: &mut TekkCamApp, viewport: egui::Rect) {
     let side = 38.0;
     let scale = 29.0;
     let center = egui::pos2(viewport.right() - 78.0, viewport.top() + 82.0);
-    let yaw = std::f32::consts::FRAC_PI_4 + app.ui_state.model_orbit[0];
-    let pitch = (35.264_f32.to_radians() + app.ui_state.model_orbit[1]).clamp(-1.52, 1.52);
-    let (sy, cy) = yaw.sin_cos();
-    let (sp, cp) = pitch.sin_cos();
+    let orbit = app.ui_state.model_orbit;
+    let dark = app.ui_state.theme == crate::app::AppTheme::Dark;
     let project = |point: [f32; 3]| {
-        let x = point[0] * cy - point[1] * sy;
-        let y = point[0] * sy + point[1] * cy;
+        let projected = crate::renderer::pipeline::project_view_point(point, orbit);
         egui::pos2(
-            center.x + x * scale,
-            center.y - (y * sp + point[2] * cp) * scale,
+            center.x + projected[0] * scale,
+            center.y - projected[1] * scale,
         )
     };
-    let depth = |point: [f32; 3]| {
-        let y = point[0] * sy + point[1] * cy;
-        y * cp - point[2] * sp
-    };
-    let faces: [(&str, [f32; 3], [[f32; 3]; 4], egui::Color32, [f32; 3]); 6] = [
-        (
-            "Top",
-            [0.0, 0.0, 1.0],
-            [
-                [-1.0, -1.0, 1.0],
-                [1.0, -1.0, 1.0],
-                [1.0, 1.0, 1.0],
-                [-1.0, 1.0, 1.0],
-            ],
-            egui::Color32::from_rgb(62, 62, 68),
-            [0.0, 0.0, 1.0],
-        ),
-        (
-            "Bottom",
-            [0.0, 0.0, -1.0],
-            [
-                [-1.0, 1.0, -1.0],
-                [1.0, 1.0, -1.0],
-                [1.0, -1.0, -1.0],
-                [-1.0, -1.0, -1.0],
-            ],
-            egui::Color32::from_rgb(45, 45, 50),
-            [0.0, 0.0, -1.0],
-        ),
-        (
-            "Front",
-            [0.0, 1.0, 0.0],
-            [
-                [-1.0, 1.0, -1.0],
-                [1.0, 1.0, -1.0],
-                [1.0, 1.0, 1.0],
-                [-1.0, 1.0, 1.0],
-            ],
-            egui::Color32::from_rgb(78, 78, 84),
-            [0.0, 1.0, 0.0],
-        ),
-        (
-            "Back",
-            [0.0, -1.0, 0.0],
-            [
-                [1.0, -1.0, -1.0],
-                [-1.0, -1.0, -1.0],
-                [-1.0, -1.0, 1.0],
-                [1.0, -1.0, 1.0],
-            ],
-            egui::Color32::from_rgb(57, 57, 63),
-            [0.0, -1.0, 0.0],
-        ),
-        (
-            "Right",
-            [1.0, 0.0, 0.0],
-            [
-                [1.0, 1.0, -1.0],
-                [1.0, -1.0, -1.0],
-                [1.0, -1.0, 1.0],
-                [1.0, 1.0, 1.0],
-            ],
-            egui::Color32::from_rgb(86, 86, 92),
-            [1.0, 0.0, 0.0],
-        ),
-        (
-            "Left",
-            [-1.0, 0.0, 0.0],
-            [
-                [-1.0, -1.0, -1.0],
-                [-1.0, 1.0, -1.0],
-                [-1.0, 1.0, 1.0],
-                [-1.0, -1.0, 1.0],
-            ],
-            egui::Color32::from_rgb(68, 68, 74),
-            [-1.0, 0.0, 0.0],
-        ),
-    ];
-    let toward_camera = [sy * cp, cy * cp, -sp];
+    let faces = view_cube_faces();
+    let toward_camera = crate::renderer::pipeline::view_direction(orbit);
     let mut visible: Vec<_> = faces
         .iter()
-        .filter(|(_, normal, _, _, _)| {
-            normal[0] * toward_camera[0]
-                + normal[1] * toward_camera[1]
-                + normal[2] * toward_camera[2]
+        .filter(|face| {
+            face.normal[0] * toward_camera[0]
+                + face.normal[1] * toward_camera[1]
+                + face.normal[2] * toward_camera[2]
                 > 0.001
         })
         .collect();
     visible.sort_by(|a, b| {
-        let avg_depth = |face: &&(&str, [f32; 3], [[f32; 3]; 4], egui::Color32, [f32; 3])| {
-            face.2.iter().map(|point| depth(*point)).sum::<f32>() / 4.0
+        let avg_depth = |face: &&ViewCubeFace| {
+            face.vertices
+                .iter()
+                .map(|point| crate::renderer::pipeline::view_depth(*point, orbit))
+                .sum::<f32>()
+                / 4.0
         };
-        avg_depth(a).total_cmp(&avg_depth(b))
+        avg_depth(b).total_cmp(&avg_depth(a))
     });
     let cube_rect = egui::Rect::from_center_size(center, egui::vec2(side * 2.8, side * 2.8));
     let response = ui.interact(
@@ -522,28 +701,51 @@ fn show_view_cube(ui: &mut egui::Ui, app: &mut TekkCamApp, viewport: egui::Rect)
         egui::Sense::click(),
     );
     let painter = ui.painter_at(viewport);
-    for (label, _, vertices, color, normal) in &visible {
-        let points: Vec<_> = vertices.iter().map(|point| project(*point)).collect();
-        let face_center = project(*normal);
+    let stroke_color = if dark {
+        egui::Color32::from_rgb(35, 35, 40)
+    } else {
+        egui::Color32::from_rgb(147, 148, 165)
+    };
+    let text_color = if dark {
+        egui::Color32::from_rgb(228, 228, 232)
+    } else {
+        egui::Color32::from_rgb(56, 59, 86)
+    };
+    for face in &visible {
+        let points: Vec<_> = face.vertices.iter().map(|point| project(*point)).collect();
+        let face_center = project(face.normal);
+        let fill_color = if dark {
+            face.dark_color
+        } else {
+            face.light_color
+        };
         painter.add(egui::Shape::convex_polygon(
             points,
-            *color,
-            egui::Stroke::new(1.4_f32, egui::Color32::from_rgb(35, 35, 40)),
+            fill_color,
+            egui::Stroke::new(1.4_f32, stroke_color),
         ));
         painter.text(
             face_center,
             egui::Align2::CENTER_CENTER,
-            *label,
+            face.label,
             egui::FontId::proportional(11.0),
-            egui::Color32::from_rgb(228, 228, 232),
+            text_color,
         );
     }
     let axis_origin = [-1.0, -1.0, -1.0];
-    let axes = [
-        ("X", [1.0, 0.0, 0.0], egui::Color32::from_rgb(245, 62, 72)),
-        ("Y", [0.0, 1.0, 0.0], egui::Color32::from_rgb(90, 220, 74)),
-        ("Z", [0.0, 0.0, 1.0], egui::Color32::from_rgb(52, 145, 255)),
-    ];
+    let axes = if dark {
+        [
+            ("X", [1.0, 0.0, 0.0], egui::Color32::from_rgb(245, 62, 72)),
+            ("Y", [0.0, 1.0, 0.0], egui::Color32::from_rgb(90, 220, 74)),
+            ("Z", [0.0, 0.0, 1.0], egui::Color32::from_rgb(52, 145, 255)),
+        ]
+    } else {
+        [
+            ("X", [1.0, 0.0, 0.0], egui::Color32::from_rgb(220, 48, 58)),
+            ("Y", [0.0, 1.0, 0.0], egui::Color32::from_rgb(38, 168, 48)),
+            ("Z", [0.0, 0.0, 1.0], egui::Color32::from_rgb(36, 120, 230)),
+        ]
+    };
     for (label, direction, color) in axes {
         let tip = project([
             axis_origin[0] + direction[0] * 3.0,
@@ -575,21 +777,12 @@ fn show_view_cube(ui: &mut egui::Ui, app: &mut TekkCamApp, viewport: egui::Rect)
     }
     if response.clicked() {
         if let Some(pointer) = response.interact_pointer_pos() {
-            if let Some((label, ..)) = visible.iter().min_by(|a, b| {
-                let da = project(a.4).distance_sq(pointer);
-                let db = project(b.4).distance_sq(pointer);
+            if let Some(face) = visible.iter().min_by(|a, b| {
+                let da = project(a.normal).distance_sq(pointer);
+                let db = project(b.normal).distance_sq(pointer);
                 da.total_cmp(&db)
             }) {
-                let flat_pitch = -0.565;
-                app.ui_state.model_orbit = match *label {
-                    "Top" => [0.0, 0.905],
-                    "Bottom" => [0.0, -2.135],
-                    "Front" => [-std::f32::consts::FRAC_PI_4, flat_pitch],
-                    "Right" => [std::f32::consts::FRAC_PI_4, flat_pitch],
-                    "Back" => [3.0 * std::f32::consts::FRAC_PI_4, flat_pitch],
-                    "Left" => [-3.0 * std::f32::consts::FRAC_PI_4, flat_pitch],
-                    _ => [0.0, 0.0],
-                };
+                app.ui_state.model_orbit = view_cube_orbit(face.label);
                 app.ui_state.request_fit = true;
             }
         }
@@ -741,7 +934,7 @@ fn show_empty_workspace(ui: &mut egui::Ui, app: &mut TekkCamApp, rect: egui::Rec
                     ui.add_space(12.0);
                     for (number, title, detail) in [
                         ("1", "Import", "DXF, SVG, Gerber, drill, or STEP"),
-                        ("2", "Create a toolpath", "Choose an operation and cutting tool"),
+                        ("2", "Create a toolpath", "Auto plan or choose an operation and cutting tool"),
                         ("3", "Review and export", "Simulate the path, then export G-code"),
                     ] {
                         ui.horizontal(|ui| {
@@ -2045,4 +2238,42 @@ fn paint_simulated_tool(
         2.5,
         egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(255, 75, 55)),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_isometric_orbit_shows_top_front_and_left_faces() {
+        let toward = crate::renderer::pipeline::view_direction([0.0, 0.0]);
+        let visible: Vec<&str> = view_cube_faces()
+            .into_iter()
+            .filter(|face| {
+                face.normal[0] * toward[0] + face.normal[1] * toward[1] + face.normal[2] * toward[2]
+                    > 0.001
+            })
+            .map(|face| face.label)
+            .collect();
+        assert_eq!(visible, vec!["Top", "Front", "Left"]);
+    }
+
+    #[test]
+    fn clicking_each_view_cube_face_aligns_camera_with_its_normal() {
+        for face in view_cube_faces() {
+            let orbit = view_cube_orbit(face.label);
+            let toward = crate::renderer::pipeline::view_direction(orbit);
+            let dot = face.normal[0] * toward[0]
+                + face.normal[1] * toward[1]
+                + face.normal[2] * toward[2];
+            assert!(
+                dot > 0.99,
+                "face {} orbit {:?} yielded view_direction {:?} (dot = {})",
+                face.label,
+                orbit,
+                toward,
+                dot
+            );
+        }
+    }
 }

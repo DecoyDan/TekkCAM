@@ -121,6 +121,7 @@ pub fn show_in_sidebar(ui: &mut egui::Ui, ctx: &egui::Context, app: &mut TekkCam
             .auto_shrink([false, false])
             .max_height(body_height)
             .show(ui, |ui| {
+                apply_dark_input_border(ui, dark);
                 ui.add_sized(
                     [ui.available_width(), body_height],
                     egui::TextEdit::multiline(&mut app.ui_state.gcode_text)
@@ -172,6 +173,7 @@ pub fn show_in_sidebar(ui: &mut egui::Ui, ctx: &egui::Context, app: &mut TekkCam
     }
     ui.separator();
     ui.horizontal(|ui| {
+        apply_dark_input_border(ui, app.ui_state.theme == crate::app::AppTheme::Dark);
         ui.label(egui::RichText::new("›").color(accent).size(14.0));
         let response = ui.add_sized(
             [(ui.available_width() - 65.0).max(50.0), 22.0],
@@ -208,7 +210,11 @@ fn highlight_gcode(text: &str, width: f32, dark: bool) -> LayoutJob {
     let mono = egui::FontId::monospace(12.0);
     let base = TextFormat {
         font_id: mono.clone(),
-        color: egui::Color32::from_rgb(205, 210, 220),
+        color: if dark {
+            egui::Color32::from_rgb(205, 210, 220)
+        } else {
+            egui::Color32::from_rgb(56, 59, 86)
+        },
         ..Default::default()
     };
     let command = TextFormat {
@@ -216,18 +222,26 @@ fn highlight_gcode(text: &str, width: f32, dark: bool) -> LayoutJob {
         color: if dark {
             crate::ui::palette::SWISS_PLUM
         } else {
-            egui::Color32::from_rgb(100, 175, 255)
+            egui::Color32::from_rgb(38, 95, 200)
         },
         ..Default::default()
     };
     let axis = TextFormat {
         font_id: mono.clone(),
-        color: egui::Color32::from_rgb(245, 190, 105),
+        color: if dark {
+            egui::Color32::from_rgb(245, 190, 105)
+        } else {
+            egui::Color32::from_rgb(185, 95, 15)
+        },
         ..Default::default()
     };
     let comment = TextFormat {
         font_id: mono,
-        color: egui::Color32::from_rgb(105, 165, 115),
+        color: if dark {
+            egui::Color32::from_rgb(105, 165, 115)
+        } else {
+            egui::Color32::from_rgb(46, 125, 62)
+        },
         ..Default::default()
     };
     for line in text.split_inclusive('\n') {
@@ -253,4 +267,12 @@ fn highlight_gcode(text: &str, width: f32, dark: bool) -> LayoutJob {
 
 pub fn simulation_position(app: &TekkCamApp) -> Option<[f64; 2]> {
     app.ui_state.simulator.position
+}
+
+fn apply_dark_input_border(ui: &mut egui::Ui, dark: bool) {
+    if dark {
+        let border = egui::Stroke::new(1.0_f32, crate::ui::palette::SWISS_PLUM);
+        ui.visuals_mut().widgets.inactive.bg_stroke = border;
+        ui.visuals_mut().selection.stroke = border;
+    }
 }
