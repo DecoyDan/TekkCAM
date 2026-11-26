@@ -68,14 +68,16 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
             ui.separator();
             ui.heading("Appearance");
             ui.label("Theme");
-            ui.horizontal(|ui| {
-                theme_changed |= ui
-                    .selectable_value(&mut app.ui_state.theme, AppTheme::Light, "Light")
-                    .changed();
-                theme_changed |= ui
-                    .selectable_value(&mut app.ui_state.theme, AppTheme::Dark, "Dark")
-                    .changed();
-            });
+            let dark = app.ui_state.theme == AppTheme::Dark;
+            theme_changed |= crate::ui::icon_pill_toggle(
+                ui,
+                dark,
+                &mut app.ui_state.theme,
+                &[
+                    (AppTheme::Light, '\u{F05A8}', "Light theme"),
+                    (AppTheme::Dark, '\u{F186}', "Dark theme"),
+                ],
+            );
             ui.add_space(4.0);
             ui.label("Font size");
             ui.horizontal(|ui| {

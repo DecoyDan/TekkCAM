@@ -95,6 +95,32 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                 return;
             }
 
+            // Beginner / Advanced mode pill toggle
+            ui.horizontal(|ui| {
+                crate::ui::icon_pill_toggle(
+                    ui,
+                    dark,
+                    &mut app.ui_state.properties_advanced,
+                    &[
+                        (false, '\u{F0E66}', "Beginner mode"),
+                        (true, '\u{F1DE}', "Advanced mode"),
+                    ],
+                );
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(if app.ui_state.properties_advanced {
+                        "Advanced"
+                    } else {
+                        "Beginner"
+                    })
+                    .size(12.0)
+                    .color(MUTED),
+                );
+            });
+            ui.add_space(6.0);
+
+            let advanced = app.ui_state.properties_advanced;
+
             if !app.has_properties_content() {
                 ui.add_space(16.0);
                 ui.label(
@@ -124,32 +150,38 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                                         ui.text_edit_singleline(&mut layer.name).changed();
                                 });
 
-                                prop_row(ui, "Kind", |ui| {
-                                    ui.label(
-                                        egui::RichText::new(format!("{:?}", layer.kind))
-                                            .color(accent),
-                                    );
-                                });
+                                if advanced {
+                                    prop_row(ui, "Kind", |ui| {
+                                        ui.label(
+                                            egui::RichText::new(format!("{:?}", layer.kind))
+                                                .color(accent),
+                                        );
+                                    });
+                                }
 
                                 prop_row(ui, "Visible", |ui| {
                                     project_changed |=
                                         ui.checkbox(&mut layer.visible, "").changed();
                                 });
 
-                                prop_row(ui, "File", |ui| {
-                                    let file_path = layer.file_path.as_deref();
-                                    let file_name = file_path
-                                        .and_then(|path| std::path::Path::new(path).file_name())
-                                        .and_then(|name| name.to_str())
-                                        .unwrap_or("(not loaded)");
-                                    ui.add(
-                                        egui::Label::new(
-                                            egui::RichText::new(file_name).size(11.0).color(MUTED),
+                                if advanced {
+                                    prop_row(ui, "File", |ui| {
+                                        let file_path = layer.file_path.as_deref();
+                                        let file_name = file_path
+                                            .and_then(|path| std::path::Path::new(path).file_name())
+                                            .and_then(|name| name.to_str())
+                                            .unwrap_or("(not loaded)");
+                                        ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new(file_name)
+                                                    .size(11.0)
+                                                    .color(MUTED),
+                                            )
+                                            .truncate(),
                                         )
-                                        .truncate(),
-                                    )
-                                    .on_hover_text(file_path.unwrap_or("(not loaded)"));
-                                });
+                                        .on_hover_text(file_path.unwrap_or("(not loaded)"));
+                                    });
+                                }
 
                                 ui.add_space(12.0);
                                 ui.separator();
@@ -173,71 +205,77 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                                         ui.text_edit_singleline(&mut op.name).changed();
                                 });
 
-                                prop_row(ui, "Type", |ui| {
-                                    ui.label(
-                                        egui::RichText::new(format!("{:?}", op.kind)).color(accent),
-                                    );
-                                });
-                                if op.auto_planned {
-                                    prop_row(ui, "Planned", |ui| {
-                                        let detail = match (&op.slope_window, op.bores.len()) {
-                                            (Some([lo, hi]), _) => {
-                                                format!("Auto plan · slopes {lo:.0}°–{hi:.0}°")
-                                            }
-                                            (None, holes) if holes > 0 => {
-                                                format!("Auto plan · {holes} hole(s), helical")
-                                            }
-                                            _ => "Auto plan".to_string(),
-                                        };
-                                        ui.label(egui::RichText::new(detail).color(MUTED));
+                                if advanced {
+                                    prop_row(ui, "Type", |ui| {
+                                        ui.label(
+                                            egui::RichText::new(format!("{:?}", op.kind))
+                                                .color(accent),
+                                        );
                                     });
+                                    if op.auto_planned {
+                                        prop_row(ui, "Planned", |ui| {
+                                            let detail = match (&op.slope_window, op.bores.len()) {
+                                                (Some([lo, hi]), _) => {
+                                                    format!("Auto plan · slopes {lo:.0}°–{hi:.0}°")
+                                                }
+                                                (None, holes) if holes > 0 => {
+                                                    format!("Auto plan · {holes} hole(s), helical")
+                                                }
+                                                _ => "Auto plan".to_string(),
+                                            };
+                                            ui.label(egui::RichText::new(detail).color(MUTED));
+                                        });
+                                    }
                                 }
 
-                                if matches!(
-                                    &op.kind,
-                                    crate::cam::operations::OperationKind::ModelProfile2D
-                                ) {
-                                    let model_index = app
-                                        .ui_state
-                                        .selected_model
-                                        .filter(|index| {
-                                            app.project
-                                                .models
-                                                .get(*index)
-                                                .is_some_and(|model| model.visible)
-                                        })
-                                        .or_else(|| {
-                                            app.project
-                                                .models
-                                                .iter()
-                                                .position(|model| model.visible)
-                                        });
-                                    if let Some(model) =
-                                        model_index.and_then(|index| app.project.models.get(index))
-                                    {
-                                        let mut face_ids: Vec<u64> = model
-                                            .bodies
-                                            .iter()
-                                            .flat_map(|body| body.triangle_face_ids.iter().copied())
-                                            .collect();
-                                        face_ids.sort_unstable();
-                                        face_ids.dedup();
-                                        ui.label(format!("STEP model: {}", model.name));
-                                        let automatic_faces =
-                                            crate::cam::model_2d::automatic_profile_faces(model);
-                                        prop_row(ui, "Face selection", |ui| {
-                                            egui::ComboBox::from_id_salt((
-                                                "face_selection_mode",
-                                                idx,
-                                            ))
-                                            .selected_text(if op.manual_face_selection {
-                                                "Manual"
-                                            } else {
-                                                "Automatic"
+                                if advanced {
+                                    if matches!(
+                                        &op.kind,
+                                        crate::cam::operations::OperationKind::ModelProfile2D
+                                    ) {
+                                        let model_index = app
+                                            .ui_state
+                                            .selected_model
+                                            .filter(|index| {
+                                                app.project
+                                                    .models
+                                                    .get(*index)
+                                                    .is_some_and(|model| model.visible)
                                             })
-                                            .show_ui(
-                                                ui,
-                                                |ui| {
+                                            .or_else(|| {
+                                                app.project
+                                                    .models
+                                                    .iter()
+                                                    .position(|model| model.visible)
+                                            });
+                                        if let Some(model) = model_index
+                                            .and_then(|index| app.project.models.get(index))
+                                        {
+                                            let mut face_ids: Vec<u64> = model
+                                                .bodies
+                                                .iter()
+                                                .flat_map(|body| {
+                                                    body.triangle_face_ids.iter().copied()
+                                                })
+                                                .collect();
+                                            face_ids.sort_unstable();
+                                            face_ids.dedup();
+                                            ui.label(format!("STEP model: {}", model.name));
+                                            let automatic_faces =
+                                                crate::cam::model_2d::automatic_profile_faces(
+                                                    model,
+                                                );
+                                            prop_row(ui, "Face selection", |ui| {
+                                                egui::ComboBox::from_id_salt((
+                                                    "face_selection_mode",
+                                                    idx,
+                                                ))
+                                                .selected_text(if op.manual_face_selection {
+                                                    "Manual"
+                                                } else {
+                                                    "Automatic"
+                                                })
+                                                .show_ui(ui, |ui| {
                                                     if ui
                                                         .selectable_value(
                                                             &mut op.manual_face_selection,
@@ -262,144 +300,148 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                                                         }
                                                         project_changed = true;
                                                     }
-                                                },
-                                            );
-                                        });
-                                        if !op.manual_face_selection {
-                                            ui.label(format!(
-                                                "Automatic top-view outline · {} source faces",
-                                                automatic_faces.len(),
-                                            ));
-                                        }
-                                        if op.manual_face_selection {
-                                            ui.label(format!(
-                                                "Source faces · {} selected",
-                                                op.source_face_ids.len()
-                                            ));
-                                            ui.add_space(4.0);
-                                            let all_selected = !face_ids.is_empty()
-                                                && face_ids
-                                                    .iter()
-                                                    .all(|id| op.source_face_ids.contains(id));
-                                            ui.horizontal(|ui| {
-                                                if ui
-                                                    .add_enabled(
-                                                        !face_ids.is_empty() && !all_selected,
-                                                        egui::Button::new("Select all"),
-                                                    )
-                                                    .clicked()
-                                                {
-                                                    op.source_face_ids.clone_from(&face_ids);
-                                                    project_changed = true;
-                                                }
-                                                if ui
-                                                    .add_enabled(
-                                                        !op.source_face_ids.is_empty(),
-                                                        egui::Button::new("Clear"),
-                                                    )
-                                                    .clicked()
-                                                {
-                                                    op.source_face_ids.clear();
-                                                    project_changed = true;
-                                                }
+                                                });
                                             });
-                                            egui::Frame::group(ui.style()).show(ui, |ui| {
-                                                ui.set_width(ui.available_width());
-                                                ui.set_max_height(180.0);
-                                                egui::ScrollArea::vertical()
-                                                    .id_salt(("step_face_list", idx))
-                                                    .auto_shrink([false, false])
-                                                    .show(ui, |ui| {
-                                                        for face_id in face_ids {
-                                                            let mut selected = op
-                                                                .source_face_ids
-                                                                .contains(&face_id);
-                                                            if ui
-                                                                .checkbox(
-                                                                    &mut selected,
-                                                                    format!("Face {face_id}"),
-                                                                )
-                                                                .changed()
-                                                            {
-                                                                if selected {
-                                                                    op.source_face_ids
-                                                                        .push(face_id);
-                                                                } else {
-                                                                    op.source_face_ids.retain(
-                                                                        |id| *id != face_id,
-                                                                    );
+                                            if !op.manual_face_selection {
+                                                ui.label(format!(
+                                                    "Automatic top-view outline · {} source faces",
+                                                    automatic_faces.len(),
+                                                ));
+                                            }
+                                            if op.manual_face_selection {
+                                                ui.label(format!(
+                                                    "Source faces · {} selected",
+                                                    op.source_face_ids.len()
+                                                ));
+                                                ui.add_space(4.0);
+                                                let all_selected = !face_ids.is_empty()
+                                                    && face_ids
+                                                        .iter()
+                                                        .all(|id| op.source_face_ids.contains(id));
+                                                ui.horizontal(|ui| {
+                                                    if ui
+                                                        .add_enabled(
+                                                            !face_ids.is_empty() && !all_selected,
+                                                            egui::Button::new("Select all"),
+                                                        )
+                                                        .clicked()
+                                                    {
+                                                        op.source_face_ids.clone_from(&face_ids);
+                                                        project_changed = true;
+                                                    }
+                                                    if ui
+                                                        .add_enabled(
+                                                            !op.source_face_ids.is_empty(),
+                                                            egui::Button::new("Clear"),
+                                                        )
+                                                        .clicked()
+                                                    {
+                                                        op.source_face_ids.clear();
+                                                        project_changed = true;
+                                                    }
+                                                });
+                                                egui::Frame::group(ui.style()).show(ui, |ui| {
+                                                    ui.set_width(ui.available_width());
+                                                    ui.set_max_height(180.0);
+                                                    egui::ScrollArea::vertical()
+                                                        .id_salt(("step_face_list", idx))
+                                                        .auto_shrink([false, false])
+                                                        .show(ui, |ui| {
+                                                            for face_id in face_ids {
+                                                                let mut selected = op
+                                                                    .source_face_ids
+                                                                    .contains(&face_id);
+                                                                if ui
+                                                                    .checkbox(
+                                                                        &mut selected,
+                                                                        format!("Face {face_id}"),
+                                                                    )
+                                                                    .changed()
+                                                                {
+                                                                    if selected {
+                                                                        op.source_face_ids
+                                                                            .push(face_id);
+                                                                    } else {
+                                                                        op.source_face_ids.retain(
+                                                                            |id| *id != face_id,
+                                                                        );
+                                                                    }
+                                                                    project_changed = true;
                                                                 }
-                                                                project_changed = true;
                                                             }
-                                                        }
-                                                    });
-                                            });
+                                                        });
+                                                });
+                                            }
+                                        } else {
+                                            ui.label(
+                                                egui::RichText::new(
+                                                    "Import and select a STEP model first.",
+                                                )
+                                                .color(MUTED),
+                                            );
                                         }
-                                    } else {
-                                        ui.label(
-                                            egui::RichText::new(
-                                                "Import and select a STEP model first.",
-                                            )
-                                            .color(MUTED),
-                                        );
-                                    }
-                                } else if !matches!(
+                                    } else if !matches!(
                                     &op.kind,
                                     crate::cam::operations::OperationKind::Roughing3D
                                         | crate::cam::operations::OperationKind::FinishRaster3D
                                         | crate::cam::operations::OperationKind::FinishContour3D
                                         | crate::cam::operations::OperationKind::FinishWaterline3D
                                 ) && !(op.kind
-                                    == crate::cam::operations::OperationKind::HelicalBore
-                                    && !op.bores.is_empty())
-                                {
-                                    let sources: Vec<(u64, String, bool)> = app
-                                        .project
-                                        .layers
-                                        .iter()
-                                        .map(|layer| (layer.id, layer.name.clone(), layer.visible))
-                                        .collect();
-                                    let selected_text = op
-                                        .source_layer_id
-                                        .and_then(|id| sources.iter().find(|source| source.0 == id))
-                                        .map(|source| source.1.as_str())
-                                        .unwrap_or("Auto (first visible layer)");
-                                    prop_row(ui, "Geometry source", |ui| {
-                                        egui::ComboBox::from_id_salt(("operation_source", idx))
-                                            .selected_text(selected_text)
-                                            .show_ui(ui, |ui| {
-                                                if ui
-                                                    .selectable_value(
-                                                        &mut op.source_layer_id,
-                                                        None,
-                                                        "Auto (first visible layer)",
-                                                    )
-                                                    .changed()
-                                                {
-                                                    project_changed = true;
-                                                }
-                                                for (id, name, visible) in &sources {
+                                        == crate::cam::operations::OperationKind::HelicalBore
+                                        && !op.bores.is_empty())
+                                    {
+                                        let sources: Vec<(u64, String, bool)> = app
+                                            .project
+                                            .layers
+                                            .iter()
+                                            .map(|layer| {
+                                                (layer.id, layer.name.clone(), layer.visible)
+                                            })
+                                            .collect();
+                                        let selected_text = op
+                                            .source_layer_id
+                                            .and_then(|id| {
+                                                sources.iter().find(|source| source.0 == id)
+                                            })
+                                            .map(|source| source.1.as_str())
+                                            .unwrap_or("Auto (first visible layer)");
+                                        prop_row(ui, "Geometry source", |ui| {
+                                            egui::ComboBox::from_id_salt(("operation_source", idx))
+                                                .selected_text(selected_text)
+                                                .show_ui(ui, |ui| {
                                                     if ui
                                                         .selectable_value(
                                                             &mut op.source_layer_id,
-                                                            Some(*id),
-                                                            format!(
-                                                                "{}{}",
-                                                                name,
-                                                                if *visible {
-                                                                    ""
-                                                                } else {
-                                                                    " (hidden)"
-                                                                }
-                                                            ),
+                                                            None,
+                                                            "Auto (first visible layer)",
                                                         )
                                                         .changed()
                                                     {
                                                         project_changed = true;
                                                     }
-                                                }
-                                            });
-                                    });
+                                                    for (id, name, visible) in &sources {
+                                                        if ui
+                                                            .selectable_value(
+                                                                &mut op.source_layer_id,
+                                                                Some(*id),
+                                                                format!(
+                                                                    "{}{}",
+                                                                    name,
+                                                                    if *visible {
+                                                                        ""
+                                                                    } else {
+                                                                        " (hidden)"
+                                                                    }
+                                                                ),
+                                                            )
+                                                            .changed()
+                                                        {
+                                                            project_changed = true;
+                                                        }
+                                                    }
+                                                });
+                                        });
+                                    }
                                 }
 
                                 ui.add_space(8.0);
@@ -433,64 +475,67 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                                         },
                                     );
 
-                                    prop_row(
-                                        ui,
-                                        &format!("Plunge Feedrate ({}/min)", units.label()),
-                                        |ui| {
-                                            project_changed |= unit_drag(
-                                                ui,
-                                                &mut op.tool.plunge_rate_mm_min,
-                                                units,
-                                                1.0,
-                                                10.0,
-                                                2000.0,
-                                            );
-                                        },
-                                    );
-
-                                    prop_row(ui, "Spindle Speed (RPM)", |ui| {
-                                        project_changed |= ui
-                                            .add(
-                                                egui::DragValue::new(&mut op.tool.spindle_rpm)
-                                                    .speed(50.0)
-                                                    .range(0.0..=30000.0),
-                                            )
-                                            .changed();
-                                    });
-
-                                    prop_row(ui, "Tool shape", |ui| {
-                                        egui::ComboBox::from_id_salt("operation_tool_shape")
-                                            .selected_text(format!("{:?}", op.tool.shape))
-                                            .show_ui(ui, |ui| {
-                                                for shape in [
-                                                    crate::cam::tool::ToolShape::Flat,
-                                                    crate::cam::tool::ToolShape::BallNose,
-                                                    crate::cam::tool::ToolShape::BullNose,
-                                                ] {
-                                                    project_changed |= ui
-                                                        .selectable_value(
-                                                            &mut op.tool.shape,
-                                                            shape,
-                                                            format!("{:?}", shape),
-                                                        )
-                                                        .changed();
-                                                }
-                                            });
-                                    });
-                                    for (label, value) in [
-                                        ("Flute length", &mut op.tool.flute_length_mm),
-                                        ("Stickout", &mut op.tool.stickout_mm),
-                                        ("Corner radius", &mut op.tool.corner_radius_mm),
-                                        ("Holder clearance", &mut op.tool.holder_clearance_mm),
-                                    ] {
+                                    if advanced {
                                         prop_row(
                                             ui,
-                                            &format!("{} ({})", label, units.label()),
+                                            &format!("Plunge Feedrate ({}/min)", units.label()),
                                             |ui| {
-                                                project_changed |=
-                                                    unit_drag(ui, value, units, 0.1, 0.0, 300.0);
+                                                project_changed |= unit_drag(
+                                                    ui,
+                                                    &mut op.tool.plunge_rate_mm_min,
+                                                    units,
+                                                    1.0,
+                                                    10.0,
+                                                    2000.0,
+                                                );
                                             },
                                         );
+
+                                        prop_row(ui, "Spindle Speed (RPM)", |ui| {
+                                            project_changed |= ui
+                                                .add(
+                                                    egui::DragValue::new(&mut op.tool.spindle_rpm)
+                                                        .speed(50.0)
+                                                        .range(0.0..=30000.0),
+                                                )
+                                                .changed();
+                                        });
+
+                                        prop_row(ui, "Tool shape", |ui| {
+                                            egui::ComboBox::from_id_salt("operation_tool_shape")
+                                                .selected_text(format!("{:?}", op.tool.shape))
+                                                .show_ui(ui, |ui| {
+                                                    for shape in [
+                                                        crate::cam::tool::ToolShape::Flat,
+                                                        crate::cam::tool::ToolShape::BallNose,
+                                                        crate::cam::tool::ToolShape::BullNose,
+                                                    ] {
+                                                        project_changed |= ui
+                                                            .selectable_value(
+                                                                &mut op.tool.shape,
+                                                                shape,
+                                                                format!("{:?}", shape),
+                                                            )
+                                                            .changed();
+                                                    }
+                                                });
+                                        });
+                                        for (label, value) in [
+                                            ("Flute length", &mut op.tool.flute_length_mm),
+                                            ("Stickout", &mut op.tool.stickout_mm),
+                                            ("Corner radius", &mut op.tool.corner_radius_mm),
+                                            ("Holder clearance", &mut op.tool.holder_clearance_mm),
+                                        ] {
+                                            prop_row(
+                                                ui,
+                                                &format!("{} ({})", label, units.label()),
+                                                |ui| {
+                                                    project_changed |= unit_drag(
+                                                        ui, value, units, 0.1, 0.0, 300.0,
+                                                    );
+                                                },
+                                            );
+                                        }
                                     }
                                 });
 
@@ -519,20 +564,22 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                                             .color(MUTED),
                                         );
                                     } else {
-                                        prop_row(
-                                            ui,
-                                            &format!("Maximum Stepdown ({})", units.label()),
-                                            |ui| {
-                                                project_changed |= unit_drag(
-                                                    ui,
-                                                    &mut op.depth_per_pass_mm,
-                                                    units,
-                                                    0.01,
-                                                    0.01,
-                                                    10.0,
-                                                );
-                                            },
-                                        );
+                                        if advanced {
+                                            prop_row(
+                                                ui,
+                                                &format!("Maximum Stepdown ({})", units.label()),
+                                                |ui| {
+                                                    project_changed |= unit_drag(
+                                                        ui,
+                                                        &mut op.depth_per_pass_mm,
+                                                        units,
+                                                        0.01,
+                                                        0.01,
+                                                        10.0,
+                                                    );
+                                                },
+                                            );
+                                        }
 
                                         prop_row(
                                             ui,
@@ -550,83 +597,89 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                                         );
                                     }
 
-                                    let margin_label = if is_roughing {
-                                        "Stock to Leave"
-                                    } else if is_3d_machining {
-                                        "Stock to Leave"
-                                    } else {
-                                        "Stock to Leave"
-                                    };
-                                    prop_row(
-                                        ui,
-                                        &format!("{} ({})", margin_label, units.label()),
-                                        |ui| {
-                                            project_changed |= unit_drag(
-                                                ui,
-                                                &mut op.margin_mm,
-                                                units,
-                                                0.01,
-                                                0.0,
-                                                5.0,
-                                            );
-                                        },
-                                    );
+                                    if advanced {
+                                        let margin_label = if is_roughing {
+                                            "Stock to Leave"
+                                        } else if is_3d_machining {
+                                            "Stock to Leave"
+                                        } else {
+                                            "Stock to Leave"
+                                        };
+                                        prop_row(
+                                            ui,
+                                            &format!("{} ({})", margin_label, units.label()),
+                                            |ui| {
+                                                project_changed |= unit_drag(
+                                                    ui,
+                                                    &mut op.margin_mm,
+                                                    units,
+                                                    0.01,
+                                                    0.0,
+                                                    5.0,
+                                                );
+                                            },
+                                        );
 
-                                    use crate::cam::operations::OperationKind as Kind;
-                                    if matches!(
-                                        &op.kind,
-                                        Kind::Isolation | Kind::Contour | Kind::ModelProfile2D
-                                    ) {
-                                        prop_row(ui, "Ramp angle (deg, 0 = plunge)", |ui| {
-                                            project_changed |= ui
-                                                .add(
-                                                    egui::DragValue::new(&mut op.ramp_angle_deg)
+                                        use crate::cam::operations::OperationKind as Kind;
+                                        if matches!(
+                                            &op.kind,
+                                            Kind::Isolation | Kind::Contour | Kind::ModelProfile2D
+                                        ) {
+                                            prop_row(ui, "Ramp angle (deg, 0 = plunge)", |ui| {
+                                                project_changed |= ui
+                                                    .add(
+                                                        egui::DragValue::new(
+                                                            &mut op.ramp_angle_deg,
+                                                        )
                                                         .speed(0.1)
                                                         .range(0.0..=45.0),
-                                                )
-                                                .changed();
-                                        });
-                                    }
-                                    if op.kind == Kind::Pocket {
-                                        prop_row(ui, "Stepover (% of tool diameter)", |ui| {
-                                            project_changed |= ui
-                                                .add(
-                                                    egui::DragValue::new(&mut op.stepover_ratio)
+                                                    )
+                                                    .changed();
+                                            });
+                                        }
+                                        if op.kind == Kind::Pocket {
+                                            prop_row(ui, "Stepover (% of tool diameter)", |ui| {
+                                                project_changed |= ui
+                                                    .add(
+                                                        egui::DragValue::new(
+                                                            &mut op.stepover_ratio,
+                                                        )
                                                         .speed(0.01)
                                                         .range(0.05..=1.0),
-                                                )
-                                                .changed();
-                                        });
-                                    }
-                                    if op.kind == Kind::Drill {
-                                        prop_row(
-                                            ui,
-                                            &format!("Pecking Depth ({})", units.label()),
-                                            |ui| {
-                                                project_changed |= unit_drag(
-                                                    ui,
-                                                    &mut op.peck_depth_mm,
-                                                    units,
-                                                    0.05,
-                                                    0.0,
-                                                    50.0,
-                                                );
-                                            },
-                                        );
-                                        prop_row(
-                                            ui,
-                                            &format!("Chip-break retract ({})", units.label()),
-                                            |ui| {
-                                                project_changed |= unit_drag(
-                                                    ui,
-                                                    &mut op.chip_break_mm,
-                                                    units,
-                                                    0.05,
-                                                    0.0,
-                                                    50.0,
-                                                );
-                                            },
-                                        );
+                                                    )
+                                                    .changed();
+                                            });
+                                        }
+                                        if op.kind == Kind::Drill {
+                                            prop_row(
+                                                ui,
+                                                &format!("Pecking Depth ({})", units.label()),
+                                                |ui| {
+                                                    project_changed |= unit_drag(
+                                                        ui,
+                                                        &mut op.peck_depth_mm,
+                                                        units,
+                                                        0.05,
+                                                        0.0,
+                                                        50.0,
+                                                    );
+                                                },
+                                            );
+                                            prop_row(
+                                                ui,
+                                                &format!("Chip-break retract ({})", units.label()),
+                                                |ui| {
+                                                    project_changed |= unit_drag(
+                                                        ui,
+                                                        &mut op.chip_break_mm,
+                                                        units,
+                                                        0.05,
+                                                        0.0,
+                                                        50.0,
+                                                    );
+                                                },
+                                            );
+                                        }
                                     }
                                 });
 

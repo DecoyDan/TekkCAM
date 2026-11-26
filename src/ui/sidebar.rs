@@ -150,9 +150,20 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                 } else {
                     egui::Color32::TRANSPARENT
                 };
+                let row_border = if *is_selected {
+                    accent
+                } else if dark {
+                    egui::Color32::from_rgb(63, 64, 72)
+                } else {
+                    egui::Color32::from_rgb(196, 198, 210)
+                };
 
                 let row_button_response = egui::Frame::new()
                     .fill(row_bg)
+                    .stroke(egui::Stroke::new(
+                        if *is_selected { 1.2_f32 } else { 0.8 },
+                        row_border,
+                    ))
                     .corner_radius(egui::CornerRadius::same(4))
                     .inner_margin(egui::Margin::symmetric(6, 3))
                     .show(ui, |ui| {
@@ -177,7 +188,6 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                             let layer_button = egui::Button::new(
                                 egui::RichText::new(label).size(13.0).color(row_text),
                             )
-                            .selected(*is_selected)
                             .corner_radius(egui::CornerRadius::same(5))
                             .frame(false);
                             let layer_response =
@@ -333,54 +343,74 @@ pub fn show(ctx: &egui::Context, app: &mut TekkCamApp) {
                 let mut add_model_operation: Option<(usize, crate::cam::operations::Operation)> =
                     None;
                 for (index, (selected, visible, label)) in model_display.iter().enumerate() {
+                    let row_bg = if *selected {
+                        selected_bg
+                    } else {
+                        egui::Color32::TRANSPARENT
+                    };
+                    let row_border = if *selected {
+                        accent
+                    } else if dark {
+                        egui::Color32::from_rgb(63, 64, 72)
+                    } else {
+                        egui::Color32::from_rgb(196, 198, 210)
+                    };
+
                     let mut child_hit_rects = Vec::with_capacity(2);
-                    let row = ui.allocate_ui_with_layout(
-                        egui::vec2(ui.available_width(), 26.0),
-                        egui::Layout::left_to_right(egui::Align::Center),
-                        |ui| {
-                            ui.add_space(4.0);
-                            let visibility_icon = if *visible { ICON_EYE } else { ICON_EYE_OFF };
-                            let icon = egui::RichText::new(visibility_icon.to_string())
-                                .font(egui::FontId::new(
-                                    15.0,
-                                    egui::FontFamily::Name("sidebar_icons".into()),
-                                ))
-                                .color(row_text);
-                            let visibility_response = ui
-                                .add_sized([22.0, 20.0], egui::Button::new(icon).frame(false))
-                                .on_hover_text(if *visible { "Hide model" } else { "Show model" });
-                            child_hit_rects.push(visibility_response.rect);
-                            if visibility_response.clicked() {
-                                changed_model_visibility = Some((index, !*visible));
-                            }
-                            ui.add_space(4.0);
-                            show_model_context_menu(
-                                &visibility_response,
-                                index,
-                                &mut add_model_operation,
-                                &mut delete_model,
-                            );
-                            let model_button_width = (ui.available_width() - 4.0).max(0.0);
-                            let model_response = ui.add(
-                                egui::Button::new(label)
-                                    .selected(*selected)
+                    let row = egui::Frame::new()
+                        .fill(row_bg)
+                        .stroke(egui::Stroke::new(
+                            if *selected { 1.2_f32 } else { 0.8 },
+                            row_border,
+                        ))
+                        .corner_radius(egui::CornerRadius::same(4))
+                        .inner_margin(egui::Margin::symmetric(6, 3))
+                        .show(ui, |ui| {
+                            let row_width = ui.available_width();
+                            ui.set_width(row_width);
+                            ui.horizontal(|ui| {
+                                let visibility_icon = if *visible { ICON_EYE } else { ICON_EYE_OFF };
+                                let icon = egui::RichText::new(visibility_icon.to_string())
+                                    .font(egui::FontId::new(
+                                        15.0,
+                                        egui::FontFamily::Name("sidebar_icons".into()),
+                                    ))
+                                    .color(row_text);
+                                let visibility_response = ui
+                                    .add_sized([22.0, 20.0], egui::Button::new(icon).frame(false))
+                                    .on_hover_text(if *visible { "Hide model" } else { "Show model" });
+                                child_hit_rects.push(visibility_response.rect);
+                                if visibility_response.clicked() {
+                                    changed_model_visibility = Some((index, !*visible));
+                                }
+                                show_model_context_menu(
+                                    &visibility_response,
+                                    index,
+                                    &mut add_model_operation,
+                                    &mut delete_model,
+                                );
+                                let model_button_width = ui.available_width().max(0.0);
+                                let model_response = ui.add(
+                                    egui::Button::new(
+                                        egui::RichText::new(label).size(13.0).color(row_text),
+                                    )
                                     .corner_radius(egui::CornerRadius::same(3))
                                     .frame(false)
-                                    .min_size(egui::vec2(model_button_width, 26.0))
+                                    .min_size(egui::vec2(model_button_width, 20.0))
                                     .truncate(),
-                            );
-                            child_hit_rects.push(model_response.rect);
-                            if model_response.clicked() {
-                                select_model = Some(index);
-                            }
-                            show_model_context_menu(
-                                &model_response,
-                                index,
-                                &mut add_model_operation,
-                                &mut delete_model,
-                            );
-                        },
-                    );
+                                );
+                                child_hit_rects.push(model_response.rect);
+                                if model_response.clicked() {
+                                    select_model = Some(index);
+                                }
+                                show_model_context_menu(
+                                    &model_response,
+                                    index,
+                                    &mut add_model_operation,
+                                    &mut delete_model,
+                                );
+                            });
+                        });
                     let response = row.response.interact(egui::Sense::click());
                     let pointer_over_child = ctx
                         .input(|input| input.pointer.interact_pos())
